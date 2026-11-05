@@ -33,7 +33,10 @@ NUMBER_RE = re.compile(r"^-?\d+(\.\d+)?$")
 ID_RE = r"^[a-z][a-z0-9_]{0,23}$"
 MAX_PERIOD = 500
 
-IndicatorType = Literal["sma", "ema", "rsi", "macd", "bb", "atr", "highest", "lowest", "roc"]
+IndicatorType = Literal["sma", "ema", "rsi", "macd", "bb", "atr", "highest", "lowest", "roc",
+                        "normalize"]
+OF_TYPES = {"sma", "ema", "highest", "lowest", "normalize"}
+OF_RE = r"^[a-z][a-z0-9_]{0,23}(\.[a-z]+)?$"
 Op = Literal[">", "<", ">=", "<=", "crosses_above", "crosses_below"]
 
 
@@ -42,6 +45,8 @@ class Indicator(BaseModel):
     type: IndicatorType
     period: int = Field(default=14, ge=1, le=MAX_PERIOD)
     source: Literal["open", "high", "low", "close", "volume"] = "close"
+    # apply to another (earlier) indicator instead of a price, e.g. highest of rsi14
+    of: str | None = Field(default=None, pattern=OF_RE)
     # macd
     fast: int = Field(default=12, ge=1, le=MAX_PERIOD)
     slow: int = Field(default=26, ge=2, le=MAX_PERIOD)
@@ -60,6 +65,8 @@ class Indicator(BaseModel):
     def _macd_order(self) -> Indicator:
         if self.type == "macd" and self.fast >= self.slow:
             raise ValueError(f"{self.id}: macd fast must be < slow")
+        if self.of is not None and self.type not in OF_TYPES:
+            raise ValueError(f"{self.id}: 'of' works with {', '.join(sorted(OF_TYPES))}")
         return self
 
     def warmup(self) -> int:
@@ -98,7 +105,14 @@ class StrategySpec(BaseModel):
         ids = [i.id for i in self.indicators]
         if len(ids) != len(set(ids)):
             raise ValueError("indicator ids must be unique")
-        types = {i.id: i.type for i in self.indicators}
+        types: dict[str, str] = {}
+        for ind in self.indicators:
+            if ind.of is not None:
+                base = ind.of.split(".")[0]
+                if base not in types:
+                    raise ValueError(f"{ind.id}: 'of' must name an indicator declared before it")
+                _parse_operand(ind.of, types)
+            types[ind.id] = ind.type
         if not (self.entry.all or self.entry.any):
             raise ValueError("entry needs at least one condition")
         has_exit = (self.exit.all or self.exit.any or self.stop_loss_pct
@@ -114,7 +128,10 @@ class StrategySpec(BaseModel):
         return [*self.entry.all, *self.entry.any, *self.exit.all, *self.exit.any]
 
     def warmup(self) -> int:
-        base = max((i.warmup() for i in self.indicators), default=0)
+        chain: dict[str, int] = {}
+        for i in self.indicators:
+            chain[i.id] = i.warmup() + (chain[i.of.split(".")[0]] if i.of else 0)
+        base = max(chain.values(), default=0)
         shifts = []
         for c in self.conditions():
             for side in (c.left, c.right):
@@ -149,8 +166,23 @@ def _parse_operand(text: str, types: dict[str, str]) -> tuple[str, str | None, i
 
 
 # ---------------------------------------------------------------- evaluation
-def _indicator_series(ind: Indicator, frame: pd.DataFrame) -> dict[str | None, pd.Series]:
-    src = frame[ind.source]
+def _indicator_series(ind: Indicator, frame: pd.DataFrame,
+                      done: dict[str, dict[str | None, pd.Series]] | None = None,
+                      ) -> dict[str | None, pd.Series]:
+    if ind.of is not None:
+        base, _, output = ind.of.partition(".")
+        src = done[base][output or None]
+        if ind.type == "highest":
+            return {None: src.rolling(ind.period).max()}
+        if ind.type == "lowest":
+            return {None: src.rolling(ind.period).min()}
+    else:
+        src = frame[ind.source]
+    if ind.type == "normalize":
+        lo, hi = src.rolling(ind.period).min(), src.rolling(ind.period).max()
+        rng = hi - lo
+        out = (src - lo) / rng.where(rng > 0)
+        return {None: out.where(rng > 0, 0.5).where(lo.notna())}
     if ind.type == "sma":
         return {None: src.rolling(ind.period).mean()}
     if ind.type == "ema":
@@ -191,8 +223,9 @@ class _Context:
     def __init__(self, spec: StrategySpec, frame: pd.DataFrame):
         self.frame = frame.reset_index(drop=True)
         self.types = {i.id: i.type for i in spec.indicators}
-        self.series: dict[str, dict[str | None, pd.Series]] = {
-            i.id: _indicator_series(i, self.frame) for i in spec.indicators}
+        self.series: dict[str, dict[str | None, pd.Series]] = {}
+        for i in spec.indicators:          # in order: 'of' may use earlier indicators
+            self.series[i.id] = _indicator_series(i, self.frame, self.series)
         ts = pd.to_datetime(self.frame["timestamp"], utc=True)
         self.time = {"hour": ts.dt.hour.astype(float), "weekday": ts.dt.weekday.astype(float)}
 
@@ -282,7 +315,7 @@ def overlay_lines(spec: StrategySpec, frame: pd.DataFrame):
 
     lines = []
     for ind in spec.indicators:
-        if ind.type in ("sma", "ema", "highest", "lowest") and ind.source != "volume":
+        if ind.of is None and ind.type in ("sma", "ema", "highest", "lowest") and ind.source != "volume":
             lines.append(Overlay(f"{ind.id} ({ind.type.upper()} {ind.period})",
                                  _indicator_series(ind, frame)[None]))
         elif ind.type == "bb":
@@ -296,7 +329,8 @@ def overlay_lines(spec: StrategySpec, frame: pd.DataFrame):
 _OP_TR = {">": "büyüktür", "<": "küçüktür", ">=": "büyük veya eşit", "<=": "küçük veya eşit",
           "crosses_above": "yukarı keser", "crosses_below": "aşağı keser"}
 _IND_TR = {"sma": "SMA", "ema": "EMA", "rsi": "RSI", "macd": "MACD", "bb": "Bollinger",
-           "atr": "ATR", "highest": "En yüksek", "lowest": "En düşük", "roc": "Değişim %"}
+           "atr": "ATR", "highest": "En yüksek", "lowest": "En düşük", "roc": "Değişim %",
+           "normalize": "Normalize (0–1)"}
 _FIELD_TR = {"open": "açılış", "high": "yüksek", "low": "düşük", "close": "kapanış",
              "volume": "hacim", "hour": "saat (UTC)", "weekday": "haftanın günü (0=Pzt)"}
 
@@ -318,7 +352,8 @@ def describe(spec: StrategySpec) -> dict:
             return f"{i.id} = Bollinger({i.period}, {i.std:g}σ) — {_FIELD_TR[i.source]}"
         if i.type == "atr":
             return f"{i.id} = ATR({i.period})"
-        return f"{i.id} = {_IND_TR[i.type]}({i.period}) — {_FIELD_TR[i.source]}"
+        target = i.of if i.of else _FIELD_TR[i.source]
+        return f"{i.id} = {_IND_TR[i.type]}({i.period}) — {target}"
 
     def cond_tr(c: Condition) -> str:
         return f"{_operand_tr(c.left)} {_OP_TR[c.op]} {_operand_tr(c.right)}"
