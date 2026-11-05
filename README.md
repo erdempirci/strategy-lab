@@ -98,6 +98,25 @@ Intrabar: the highest protective level is touched first; gaps fill at the open; 
 target are both inside a bar the stop is assumed first. Entries need a fresh 0→1 signal.
 Custom strategies' `stop_loss_pct` / `take_profit_pct` override the stop/target.
 
+## Strategy discovery (`api/app/discovery/`)
+`POST /api/discover` (dashboard: **Keşfet**) searches for strategies under your risk rules
+and reports only what survives data it never saw:
+
+1. **Generate** 20–300 DSL candidates (8 families × trend / session / weekday filters ×
+   stop / target settings), seeded and reproducible.
+2. **Split chronologically**: train 60% · validation 20% · **holdout 20%**.
+3. **Train**: needs enough trades, PF ≥ 1.05, positive month-equivalent return, no rule breach.
+4. **Validation**: top 25 must stay profitable with no breach; ranked by min(train, validation).
+5. **Holdout**: the top 5 are measured once. Holdout never influences selection (tested).
+6. **Deflated Sharpe** (Bailey & López de Prado) with the *effective* number of independent
+   trials (participation ratio of the trials' return-correlation eigenvalues).
+
+Verdicts: **robust** (holdout profitable, no breach, DSR ≥ 0.9) · **promising** (holdout
+profitable, luck not ruled out) · **failed holdout**.
+
+Calibration (tests): 0 robust picks on random-walk markets across seeds; finds a planted
+momentum edge. On real markets "nothing robust found" is a normal, useful outcome.
+
 ## Backtest engine
 Trade-based, long/flat (`api/app/services/backtester.py`):
 - Signal at bar close → fill at **next bar open** (no look-ahead).
@@ -124,7 +143,7 @@ market calendars.
 4. ✅ Risk engine: intrabar SL/TP, risk-based sizing, daily / total loss limits
    (Fibonacci 0.618 and FVG strategies still to add)
 5. ✅ AI strategy builder → validated JSON DSL ("Kendi stratejim")
-6. Optimisation (grid search, multi-symbol / multi-timeframe)
-7. Validation: out-of-sample, walk-forward, Monte Carlo, overfitting checks
+6. ✅ Discovery: search + train/validation/holdout + deflated Sharpe
+7. Next: walk-forward folds, Monte Carlo, multi-symbol robustness
 8. Funded / prop-firm risk simulator
 9. Paper trading

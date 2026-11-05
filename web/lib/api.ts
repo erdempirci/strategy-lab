@@ -1,5 +1,5 @@
 import type {
-  AIStrategy, BacktestResult, CompareResult, MarketParams, RulesText, StrategyJSON, StrategySpec,
+  AIStrategy, BacktestResult, CompareResult, DiscoveryResult, MarketParams, RulesText, StrategyJSON, StrategySpec,
 } from "./types";
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
@@ -44,4 +44,9 @@ export const validateSpec = (spec: StrategyJSON) =>
 export const runCustom = (market: MarketParams, spec: StrategyJSON) =>
   call<BacktestResult>("/custom/backtest", {
     method: "POST", body: JSON.stringify({ ...market, spec, include_candles: true }),
+  });
+
+export const discover = (market: MarketParams, n_candidates: number, seed: number) =>
+  call<DiscoveryResult>("/discover", {
+    method: "POST", body: JSON.stringify({ ...market, n_candidates, seed }),
   });

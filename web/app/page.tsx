@@ -2,15 +2,17 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { CustomEditor, RulesCard } from "@/components/CustomStrategy";
+import { DiscoveryFields, DiscoveryReport } from "@/components/Discovery";
 import EquityChart from "@/components/EquityChart";
 import { RISK_DEFAULTS, RiskFields, RiskReport } from "@/components/RiskPanel";
 import PriceChart from "@/components/PriceChart";
 import { OVERLAY_PALETTE } from "@/components/charts";
-import { compareAll, fetchStrategies, runBacktest, runCustom } from "@/lib/api";
+import { compareAll, discover, fetchStrategies, runBacktest, runCustom } from "@/lib/api";
 import { useCustomStrategy } from "@/lib/useCustomStrategy";
 import { fmt, pct, shortTime, tone } from "@/lib/format";
 import type {
-  BacktestResult, CompareResult, MarketParams, RunRecord, StrategySpec,
+  BacktestResult, CompareResult, DiscoveryCandidate, DiscoveryResult, MarketParams, RunRecord,
+  StrategyJSON, StrategySpec,
 } from "@/lib/types";
 
 const MARKET_DEFAULTS: MarketParams = {
@@ -31,7 +33,11 @@ const EXIT_TR: Record<string, string> = {
 };
 
 export default function Home() {
-  const [mode, setMode] = useState<"library" | "custom">("library");
+  const [mode, setMode] = useState<"library" | "custom" | "discover">("library");
+  const [discN, setDiscN] = useState(150);
+  const [discSeed, setDiscSeed] = useState(42);
+  const [discBars, setDiscBars] = useState(10000);
+  const [discovery, setDiscovery] = useState<DiscoveryResult | null>(null);
   const custom = useCustomStrategy();
   const [market, setMarket] = useState<MarketParams>(MARKET_DEFAULTS);
   const [strategies, setStrategies] = useState<StrategySpec[]>([]);
@@ -40,7 +46,7 @@ export default function Home() {
   const [result, setResult] = useState<BacktestResult | null>(null);
   const [runs, setRuns] = useState<RunRecord[]>([]);
   const [comparison, setComparison] = useState<CompareResult | null>(null);
-  const [loading, setLoading] = useState<"run" | "compare" | null>(null);
+  const [loading, setLoading] = useState<"run" | "compare" | "discover" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showAllTrades, setShowAllTrades] = useState(false);
 
@@ -67,13 +73,16 @@ export default function Home() {
     ...pv, [strategyId]: Object.fromEntries(spec.params.map((p) => [p.name, p.default])),
   }));
 
-  async function run(id = strategyId, params = values, forceLibrary = false) {
+  async function run(id = strategyId, params = values, forceLibrary = false,
+                     override?: { spec: StrategyJSON; market: MarketParams }) {
     setLoading("run");
     setError(null);
     try {
-      const res = !forceLibrary && mode === "custom" && custom.spec
-        ? await runCustom(market, custom.spec)
-        : await runBacktest(market, id, params);
+      const res = override
+        ? await runCustom(override.market, override.spec)
+        : !forceLibrary && mode === "custom" && custom.spec
+          ? await runCustom(market, custom.spec)
+          : await runBacktest(market, id, params);
       setResult(res);
       setShowAllTrades(false);
       const label = res.strategy === "custom" ? "özel kurallar" : Object.values(res.parameters).join("/");
@@ -83,6 +92,34 @@ export default function Home() {
     } finally {
       setLoading(null);
     }
+  }
+
+  async function runDiscovery() {
+    setLoading("discover");
+    setError(null);
+    try {
+      setDiscovery(await discover({ ...market, bars: discBars }, discN, discSeed));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(null);
+    }
+  }
+
+  async function openCandidate(c: DiscoveryCandidate) {
+    const note = `Keşif motorundan (${c.verdict_label}): son dönemde aylık ${c.holdout.monthly_pct.toFixed(2)}%, ` +
+      `şans testi %${Math.round(c.deflated_sharpe_prob * 100)}. Aşağıdaki backtest eğitim dönemi DAHİL tüm veriyi kapsar.`;
+    const loaded = await custom.loadSpec(c.spec, note);
+    if (!loaded) return;
+    const nextMarket: MarketParams = {
+      ...market, bars: discBars,
+      risk: { ...(market.risk ?? RISK_DEFAULTS), stop_type: "atr", stop_atr_mult: c.risk.stop_atr_mult,
+              take_profit_rr: c.risk.take_profit_rr },
+    };
+    setMarket(nextMarket);
+    setMode("custom");
+    await run(strategyId, values, false, { spec: loaded, market: nextMarket });
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   async function compare() {
@@ -130,10 +167,12 @@ export default function Home() {
       <div className="layout">
         <form className="panel params" onSubmit={(e) => { e.preventDefault(); run(); }}>
           <div className="tabs" role="tablist">
-            <button type="button" role="tab" aria-selected={mode === "library"} className={mode === "library" ? "on" : ""} onClick={() => setMode("library")}>Hazır strateji</button>
-            <button type="button" role="tab" aria-selected={mode === "custom"} className={mode === "custom" ? "on" : ""} onClick={() => setMode("custom")}>Kendi stratejim</button>
+            <button type="button" role="tab" aria-selected={mode === "library"} className={mode === "library" ? "on" : ""} onClick={() => setMode("library")}>Hazır</button>
+            <button type="button" role="tab" aria-selected={mode === "custom"} className={mode === "custom" ? "on" : ""} onClick={() => setMode("custom")}>Kendi</button>
+            <button type="button" role="tab" aria-selected={mode === "discover"} className={mode === "discover" ? "on" : ""} onClick={() => setMode("discover")}>Keşfet</button>
           </div>
-          {mode === "custom" ? <CustomEditor c={custom} /> : (<>
+          {mode === "discover" ? <DiscoveryFields n={discN} seed={discSeed} onN={setDiscN} onSeed={setDiscSeed} />
+          : mode === "custom" ? <CustomEditor c={custom} /> : (<>
           <label>Strateji
             <select value={strategyId} onChange={(e) => setStrategyId(e.target.value)}>
               {strategies.length === 0 && <option>Yükleniyor…</option>}
@@ -173,7 +212,9 @@ export default function Home() {
             </label>
           </div>
           <label>Bar sayısı
-            <input type="number" min={100} max={5000} step={100} value={market.bars} onChange={numM("bars")} />
+            {mode === "discover"
+              ? <input type="number" min={2000} max={20000} step={1000} value={discBars} onChange={(e) => setDiscBars(Number(e.target.value))} />
+              : <input type="number" min={100} max={20000} step={100} value={market.bars} onChange={numM("bars")} />}
           </label>
 
           <h2>Maliyet ve sermaye</h2>
@@ -187,14 +228,27 @@ export default function Home() {
           <p className="hint">1 bps = %0.01. Binance spot taker komisyonu ≈ 10 bps. Seans saatleri UTC.</p>
           <h2>Risk kuralları</h2>
           <RiskFields risk={market.risk ?? null} onChange={(r) => setM("risk", r)} />
-          <button type="submit" disabled={!!loading || (mode === "custom" ? !custom.spec : !spec)}>{loading === "run" ? "Çalışıyor…" : "Backtest çalıştır"}</button>
-          <button type="button" className="ghost" disabled={!!loading} onClick={compare}>
-            {loading === "compare" ? "Karşılaştırılıyor…" : "Tüm stratejileri karşılaştır"}
-          </button>
+          {mode === "discover" ? (
+            <button type="button" disabled={!!loading} onClick={runDiscovery}>{loading === "discover" ? "Stratejiler aranıyor…" : "Strateji ara"}</button>
+          ) : (
+            <button type="submit" disabled={!!loading || (mode === "custom" ? !custom.spec : !spec)}>{loading === "run" ? "Çalışıyor…" : "Backtest çalıştır"}</button>
+          )}
+          {mode !== "discover" && (
+            <button type="button" className="ghost" disabled={!!loading} onClick={compare}>
+              {loading === "compare" ? "Karşılaştırılıyor…" : "Tüm stratejileri karşılaştır"}
+            </button>
+          )}
           {error && <p className="error">{error}</p>}
         </form>
 
         <section className="results">
+          {mode === "discover" && discovery && <DiscoveryReport d={discovery} onOpen={openCandidate} />}
+          {mode === "discover" && !discovery && !loading && (
+            <div className="panel empty">
+              <h2>Strateji keşfi</h2>
+              <p className="muted">&quot;Strateji ara&quot;ya bas: sistem risk kurallarınla (işlem başı risk, günlük ve toplam kayıp limiti) yüzlerce stratejiyi dener, overfitting&apos;e karşı üç aşamada eler ve sadece görmediği veride de ayakta kalanları gösterir. Sonuç &quot;hiçbir şey bulunamadı&quot; da olabilir — bu da değerli bir bilgidir.</p>
+            </div>
+          )}
           {mode === "custom" && <RulesCard c={custom} />}
           {comparison && (
             <div className="panel">
@@ -367,7 +421,7 @@ export default function Home() {
             </div>
           )}
 
-          <p className="disclaimer">Geçmiş performans gelecekteki sonuçları garanti etmez. Bu panel yalnızca araştırma içindir; out-of-sample ve walk-forward doğrulaması henüz yapılmamıştır.</p>
+          <p className="disclaimer">Geçmiş performans gelecekteki sonuçları garanti etmez. Bu panel yalnızca araştırma içindir. Hazır ve kendi stratejilerinin sonuçları örneklem içidir; görmediği veride sınamak için Keşfet sekmesini kullan.</p>
         </section>
       </div>
     </main>

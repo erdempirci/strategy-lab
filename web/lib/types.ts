@@ -186,3 +186,48 @@ export interface RunRecord {
   label: string;
   result: BacktestResult;
 }
+
+export interface SegmentResult {
+  monthly_pct: number;
+  net_return_pct: number;
+  trades: number;
+  win_rate_pct: number;
+  profit_factor: number | null;
+  max_drawdown_pct: number;
+  worst_day_pct: number;
+  daily_limit_breaches: number;
+  account_failed: boolean;
+  avg_r: number | null;
+}
+
+export interface DiscoveryCandidate {
+  id: string;
+  family: string;
+  name: string;
+  spec: StrategyJSON;
+  rules: RulesText;
+  risk: { stop_type: "atr"; stop_atr_mult: number; take_profit_rr: number | null };
+  train: SegmentResult;
+  validation: SegmentResult;
+  holdout: SegmentResult;
+  deflated_sharpe_prob: number;
+  annual_sharpe_selection: number;
+  verdict: "robust" | "promising" | "failed_holdout";
+  verdict_label: string;
+}
+
+export interface DiscoveryResult {
+  symbol: string;
+  timeframe: string;
+  data_source: string;
+  synthetic_data: boolean;
+  funnel: { generated: number; evaluated: number; passed_train: number; validated: number;
+            finalists: number; robust: number };
+  thresholds: { min_trades_train: number; min_trades_validation: number; effective_trials: number;
+                deflated_sharpe_min: number };
+  segments: Record<"train" | "validation" | "holdout",
+    { start: string; end: string; bars: number; buy_and_hold_monthly_pct: number }>;
+  results: DiscoveryCandidate[];
+  elapsed_s: number;
+  seed: number;
+}
