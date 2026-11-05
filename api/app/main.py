@@ -1,15 +1,17 @@
 import os
 
+import pandas as pd
 from fastapi import APIRouter, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.data_adapters.binance import BinanceDataError, fetch_binance_ohlcv
 from app.data_adapters.normalize import quality_report
-from app.schemas import BacktestRequest
-from app.services.backtester import run_ema_backtest
+from app.schemas import BacktestRequest, CompareRequest
+from app.services.backtester import run_backtest
 from app.services.market_data import demo_ohlcv
+from app.strategies import STRATEGIES, build_signal
 
-ENGINE_VERSION = "0.2.0"
+ENGINE_VERSION = "0.3.0"
 
 app = FastAPI(
     title="Strategy Lab API",
@@ -35,31 +37,63 @@ app.add_middleware(CORSMiddleware, allow_origins=[o for o in _origins if o],
 def _load_frame(source: str, symbol: str, timeframe: str, bars: int):
     try:
         if source == "binance":
-            return fetch_binance_ohlcv(symbol, timeframe, bars), "binance_spot"
-        return demo_ohlcv(symbol=symbol, timeframe=timeframe, bars=bars), "deterministic_demo"
+            frame, label = fetch_binance_ohlcv(symbol, timeframe, bars), "binance_spot"
+        else:
+            frame = demo_ohlcv(symbol=symbol, timeframe=timeframe, bars=bars)
+            label = "deterministic_demo"
+        return frame.sort_values("timestamp").reset_index(drop=True), label
     except BinanceDataError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-def _candles_with_ema(frame, fast_period: int, slow_period: int) -> list[dict]:
-    data = frame.sort_values("timestamp").reset_index(drop=True)
-    ema_fast = data["close"].ewm(span=fast_period, adjust=False).mean()
-    ema_slow = data["close"].ewm(span=slow_period, adjust=False).mean()
-    warm = slow_period - 1
+def _candles(frame) -> list[dict]:
     return [
-        {
-            "time": int(row.timestamp.timestamp()),
-            "open": round(float(row.open), 8),
-            "high": round(float(row.high), 8),
-            "low": round(float(row.low), 8),
-            "close": round(float(row.close), 8),
-            "ema_fast": round(float(ema_fast.iloc[i]), 8) if i >= warm else None,
-            "ema_slow": round(float(ema_slow.iloc[i]), 8) if i >= warm else None,
-        }
-        for i, row in enumerate(data.itertuples(index=False))
+        {"time": int(r.timestamp.timestamp()), "open": round(float(r.open), 8),
+         "high": round(float(r.high), 8), "low": round(float(r.low), 8),
+         "close": round(float(r.close), 8)}
+        for r in frame.itertuples(index=False)
     ]
+
+
+def _overlays(spec, frame, params) -> list[dict]:
+    times = [int(t.timestamp()) for t in frame["timestamp"]]
+    out = []
+    for ov in spec.overlays(frame, **params):
+        values = ov.values.reset_index(drop=True)
+        points = [{"time": t, "value": round(float(v), 8)}
+                  for t, v in zip(times, values, strict=True) if pd.notna(v)]
+        out.append({"name": ov.name, "color": ov.color, "data": points})
+    return out
+
+
+def _run(strategy_id: str, raw_params: dict, frame, req) -> tuple[dict, dict]:
+    """Validate params and run one strategy. Raises ValueError on bad input."""
+    spec = STRATEGIES.get(strategy_id)
+    if spec is None:
+        raise ValueError(f"Unknown strategy {strategy_id!r}. See GET /api/strategies")
+    params = spec.resolve(raw_params, req.timeframe)
+    needed = max(100, 3 * spec.warmup(params))
+    if len(frame) < needed:
+        raise ValueError(f"{spec.name} needs at least {needed} bars with these parameters")
+    signal = build_signal(strategy_id, frame, params, req.timeframe)
+    result = run_backtest(frame, signal, req.timeframe, req.initial_capital,
+                          req.fee_bps, req.slippage_bps)
+    return params, result
+
+
+ASSUMPTIONS = {
+    "signal": "evaluated at bar close",
+    "execution": "next_bar_open",
+    "position": "long_or_flat, 100% equity, no leverage",
+    "fees": "fee_bps of notional on entry and exit",
+    "slippage": "slippage_bps adverse to fill price",
+    "open_position_at_end": "closed at last close, flagged forced_exit",
+    "sharpe_annualization": "24/7 market calendar",
+    "session_hours": "UTC",
+    "live_trading": False,
+}
 
 
 @router.get("/")
@@ -97,50 +131,76 @@ def get_binance_data(symbol: str = "BTC/USDT", timeframe: str = "1h", bars: int 
             "data": frame.tail(10).to_dict(orient="records")}
 
 
+@router.get("/strategies")
+def list_strategies() -> dict:
+    return {"strategies": [spec.to_dict() for spec in STRATEGIES.values()]}
+
+
 @router.post("/backtests")
 def create_backtest(request: BacktestRequest) -> dict:
-    if request.strategy != "ema_crossover":
-        raise HTTPException(status_code=400, detail="Only ema_crossover is available in MVP")
-
+    if request.strategy not in STRATEGIES:
+        raise HTTPException(status_code=400, detail=f"Unknown strategy {request.strategy!r}")
     frame, source = _load_frame(request.data_source, request.symbol, request.timeframe,
                                 request.bars)
     try:
-        result = run_ema_backtest(
-            frame=frame,
-            fast_period=request.fast_period,
-            slow_period=request.slow_period,
-            initial_capital=request.initial_capital,
-            fee_bps=request.fee_bps,
-            slippage_bps=request.slippage_bps,
-            timeframe=request.timeframe,
-        )
+        params, result = _run(request.strategy, request.strategy_params(), frame, request)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not request.include_trades:
         result.pop("trades")
+    spec = STRATEGIES[request.strategy]
     if request.include_candles:
-        result["candles"] = _candles_with_ema(frame, request.fast_period, request.slow_period)
+        result["candles"] = _candles(frame)
+        result["overlays"] = _overlays(spec, frame, params)
 
     return {
         "symbol": request.symbol,
         "timeframe": request.timeframe,
         "strategy": request.strategy,
-        "parameters": {"fast_period": request.fast_period, "slow_period": request.slow_period},
+        "strategy_name": spec.name,
+        "parameters": params,
         "data_source": source,
         "synthetic_data": source == "deterministic_demo",
         "data_quality": quality_report(frame, request.timeframe),
         "engine_version": ENGINE_VERSION,
-        "assumptions": {
-            "signal": "evaluated at bar close",
-            "execution": "next_bar_open",
-            "position": "long_or_flat, 100% equity, no leverage",
-            "fees": "fee_bps of notional on entry and exit",
-            "slippage": "slippage_bps adverse to fill price",
-            "open_position_at_end": "closed at last close, flagged forced_exit",
-            "sharpe_annualization": "24/7 market calendar",
-            "live_trading": False,
-        },
+        "assumptions": ASSUMPTIONS,
         **result,
+    }
+
+
+COMPARE_METRICS = ("net_return_pct", "max_drawdown_pct", "trades", "win_rate_pct",
+                   "profit_factor", "sharpe_annualized", "exposure_pct", "recovery_factor",
+                   "total_fees")
+
+
+@router.post("/compare")
+def compare_strategies(request: CompareRequest) -> dict:
+    """Run several strategies with default parameters on the SAME data."""
+    ids = request.strategies or list(STRATEGIES)
+    unknown = [s for s in ids if s not in STRATEGIES]
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"Unknown strategies: {unknown}")
+    frame, source = _load_frame(request.data_source, request.symbol, request.timeframe,
+                                request.bars)
+    rows = []
+    for strategy_id in ids:
+        row = {"strategy": strategy_id, "name": STRATEGIES[strategy_id].name}
+        try:
+            params, result = _run(strategy_id, {}, frame, request)
+            row["parameters"] = params
+            row["metrics"] = {k: result["metrics"][k] for k in COMPARE_METRICS}
+        except ValueError as exc:
+            row["error"] = str(exc)
+        rows.append(row)
+    return {
+        "symbol": request.symbol,
+        "timeframe": request.timeframe,
+        "data_source": source,
+        "synthetic_data": source == "deterministic_demo",
+        "data_quality": quality_report(frame, request.timeframe),
+        "engine_version": ENGINE_VERSION,
+        "note": "Default parameters, in-sample only. Not validated out-of-sample.",
+        "results": rows,
     }
 
 

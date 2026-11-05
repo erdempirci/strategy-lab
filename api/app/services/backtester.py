@@ -25,15 +25,11 @@ REQUIRED_COLUMNS = {"timestamp", "open", "high", "low", "close"}
 
 def ema_crossover_signal(frame: pd.DataFrame, fast_period: int, slow_period: int) -> pd.Series:
     """1.0 when fast EMA > slow EMA at bar close, else 0.0. NaN during warm-up."""
+    from app.strategies.library import ema_crossover
+
     if fast_period >= slow_period:
         raise ValueError("fast_period must be less than slow_period")
-    close = frame["close"]
-    ema_fast = close.ewm(span=fast_period, adjust=False).mean()
-    ema_slow = close.ewm(span=slow_period, adjust=False).mean()
-    signal = (ema_fast > ema_slow).astype(float)
-    # Slow EMA needs ~slow_period bars before it is meaningful.
-    signal.iloc[: slow_period - 1] = np.nan
-    return signal
+    return ema_crossover(frame, fast_period, slow_period)
 
 
 def _validate_frame(frame: pd.DataFrame) -> pd.DataFrame:
