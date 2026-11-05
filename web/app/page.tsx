@@ -1,10 +1,12 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { CustomEditor, RulesCard } from "@/components/CustomStrategy";
 import EquityChart from "@/components/EquityChart";
 import PriceChart from "@/components/PriceChart";
 import { OVERLAY_PALETTE } from "@/components/charts";
-import { compareAll, fetchStrategies, runBacktest } from "@/lib/api";
+import { compareAll, fetchStrategies, runBacktest, runCustom } from "@/lib/api";
+import { useCustomStrategy } from "@/lib/useCustomStrategy";
 import { fmt, pct, shortTime, tone } from "@/lib/format";
 import type {
   BacktestResult, CompareResult, MarketParams, RunRecord, StrategySpec,
@@ -23,6 +25,8 @@ const MARKET_DEFAULTS: MarketParams = {
 const TIMEFRAMES = ["15m", "30m", "1h", "4h", "1d"];
 
 export default function Home() {
+  const [mode, setMode] = useState<"library" | "custom">("library");
+  const custom = useCustomStrategy();
   const [market, setMarket] = useState<MarketParams>(MARKET_DEFAULTS);
   const [strategies, setStrategies] = useState<StrategySpec[]>([]);
   const [strategyId, setStrategyId] = useState("ema_crossover");
@@ -57,14 +61,16 @@ export default function Home() {
     ...pv, [strategyId]: Object.fromEntries(spec.params.map((p) => [p.name, p.default])),
   }));
 
-  async function run(id = strategyId, params = values) {
+  async function run(id = strategyId, params = values, forceLibrary = false) {
     setLoading("run");
     setError(null);
     try {
-      const res = await runBacktest(market, id, params);
+      const res = !forceLibrary && mode === "custom" && custom.spec
+        ? await runCustom(market, custom.spec)
+        : await runBacktest(market, id, params);
       setResult(res);
       setShowAllTrades(false);
-      const label = Object.values(res.parameters).join("/");
+      const label = res.strategy === "custom" ? "özel kurallar" : Object.values(res.parameters).join("/");
       setRuns((r) => [{ id: Date.now(), label, result: res }, ...r].slice(0, 15));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -89,9 +95,10 @@ export default function Home() {
     const s = strategies.find((x) => x.id === id);
     if (!s) return;
     const defaults = Object.fromEntries(s.params.map((p) => [p.name, p.default]));
+    setMode("library");
     setStrategyId(id);
     setParamValues((pv) => ({ ...pv, [id]: defaults }));
-    run(id, defaults);
+    run(id, defaults, true);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
@@ -116,7 +123,11 @@ export default function Home() {
 
       <div className="layout">
         <form className="panel params" onSubmit={(e) => { e.preventDefault(); run(); }}>
-          <h2>Strateji</h2>
+          <div className="tabs" role="tablist">
+            <button type="button" role="tab" aria-selected={mode === "library"} className={mode === "library" ? "on" : ""} onClick={() => setMode("library")}>Hazır strateji</button>
+            <button type="button" role="tab" aria-selected={mode === "custom"} className={mode === "custom" ? "on" : ""} onClick={() => setMode("custom")}>Kendi stratejim</button>
+          </div>
+          {mode === "custom" ? <CustomEditor c={custom} /> : (<>
           <label>Strateji
             <select value={strategyId} onChange={(e) => setStrategyId(e.target.value)}>
               {strategies.length === 0 && <option>Yükleniyor…</option>}
@@ -136,6 +147,7 @@ export default function Home() {
             </div>
           )}
           {spec && <button type="button" className="link" onClick={resetParams}>Varsayılanlara dön</button>}
+          </>)}
 
           <h2>Piyasa</h2>
           <label>Veri kaynağı
@@ -167,7 +179,7 @@ export default function Home() {
             <label>Slippage (bps)<input type="number" min={0} step={0.5} value={market.slippage_bps} onChange={numM("slippage_bps")} /></label>
           </div>
           <p className="hint">1 bps = %0.01. Binance spot taker komisyonu ≈ 10 bps. Seans saatleri UTC.</p>
-          <button type="submit" disabled={!!loading || !spec}>{loading === "run" ? "Çalışıyor…" : "Backtest çalıştır"}</button>
+          <button type="submit" disabled={!!loading || (mode === "custom" ? !custom.spec : !spec)}>{loading === "run" ? "Çalışıyor…" : "Backtest çalıştır"}</button>
           <button type="button" className="ghost" disabled={!!loading} onClick={compare}>
             {loading === "compare" ? "Karşılaştırılıyor…" : "Tüm stratejileri karşılaştır"}
           </button>
@@ -175,6 +187,7 @@ export default function Home() {
         </form>
 
         <section className="results">
+          {mode === "custom" && <RulesCard c={custom} />}
           {comparison && (
             <div className="panel">
               <div className="panel-head">
@@ -215,7 +228,7 @@ export default function Home() {
             </div>
           )}
 
-          {!result && !loading && !comparison && (
+          {!result && !loading && !comparison && mode === "library" && (
             <div className="panel empty">
               <h2>Henüz sonuç yok</h2>
               <p className="muted">Bir strateji seçip backtest çalıştır ya da tüm stratejileri aynı veride karşılaştır. Sinyal mum kapanışında, emir bir sonraki mumun açılışında gerçekleşir; komisyon ve slippage dahildir.</p>
@@ -233,6 +246,9 @@ export default function Home() {
                 </div>
               )}
 
+              {m.trades < 30 && (
+                <div className="banner warn">Sadece {m.trades} işlem var — bu kadar az işlemle win rate, profit factor ve Sharpe istatistiksel olarak güvenilir değildir. Daha fazla bar veya daha kısa zaman dilimi dene.</div>
+              )}
               <div className="metrics">
                 <Metric label="Net getiri" value={pct(m.net_return_pct)} cls={tone(m.net_return_pct)} sub={`${fmt(m.net_profit)} · son ${fmt(m.final_equity)}`} />
                 <Metric label="Max drawdown" value={pct(m.max_drawdown_pct)} cls="neg" sub={`Recovery ${fmt(m.recovery_factor)}`} />
