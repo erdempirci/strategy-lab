@@ -1,5 +1,6 @@
 from itertools import pairwise
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -76,3 +77,34 @@ def test_compare_runs_all_on_same_data_and_reports_errors():
     assert rows["ema_crossover"]["metrics"]["trades"] >= 0
     direct = client.post("/api/backtests", json={"bars": 1500, "timeframe": "4h"}).json()
     assert rows["ema_crossover"]["metrics"]["net_return_pct"] == direct["metrics"]["net_return_pct"]
+
+
+RISK = {"risk_per_trade_pct": 0.5, "daily_loss_limit_pct": 3, "max_total_loss_pct": 10}
+
+
+def test_backtest_with_risk_settings_uses_risk_engine():
+    body = client.post("/api/backtests", json={"strategy": "turtle", "bars": 2000,
+                                               "risk": RISK}).json()
+    assert body["risk"]["config"]["risk_per_trade_pct"] == 0.5
+    assert body["risk"]["worst_day_pct"] > -3.0001
+    assert all("exit_reason" in t for t in body["trades"])
+    assert "risk" not in client.post("/api/backtests", json={"bars": 500}).json()
+
+
+def test_compare_with_risk_reports_rule_metrics():
+    body = client.post("/api/compare", json={"bars": 2000, "risk": RISK}).json()
+    ok = [r for r in body["results"] if "metrics" in r]
+    assert ok and all("worst_day_pct" in r["risk"] for r in ok)
+
+
+def test_custom_backtest_with_risk_uses_spec_stop_intrabar():
+    spec = {"indicators": [{"id": "e", "type": "ema", "period": 50}],
+            "entry": {"all": [{"left": "close", "op": "crosses_above", "right": "e"}]},
+            "exit": {"all": [{"left": "close", "op": "crosses_below", "right": "e"}]},
+            "stop_loss_pct": 1.5}
+    body = client.post("/api/custom/backtest", json={"spec": spec, "bars": 2000,
+                                                     "risk": RISK}).json()
+    stops = [t for t in body["trades"] if t["exit_reason"] == "stop"]
+    assert stops
+    for t in stops:
+        assert t["stop_price"] == pytest.approx(t["entry_price"] * 0.985, rel=1e-6)

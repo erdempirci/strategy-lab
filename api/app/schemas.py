@@ -3,6 +3,18 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
+class RiskSettings(BaseModel):
+    """Prop-firm style risk rules. When sent, the risk engine is used."""
+    risk_per_trade_pct: float = Field(default=0.5, gt=0, le=10)
+    daily_loss_limit_pct: float | None = Field(default=3.0, gt=0, le=50)
+    max_total_loss_pct: float | None = Field(default=10.0, gt=0, le=90)
+    stop_type: Literal["atr", "pct"] = "atr"
+    stop_atr_period: int = Field(default=14, ge=2, le=200)
+    stop_atr_mult: float = Field(default=2.0, gt=0, le=20)
+    stop_pct: float = Field(default=2.0, gt=0, le=50)
+    take_profit_rr: float | None = Field(default=2.0, gt=0, le=20)
+
+
 class MarketRequest(BaseModel):
     symbol: str = Field(default="BTC/USDT", min_length=3, max_length=30)
     timeframe: str = Field(default="1h", min_length=2, max_length=5)
@@ -11,6 +23,7 @@ class MarketRequest(BaseModel):
     initial_capital: float = Field(default=10_000, gt=0)
     fee_bps: float = Field(default=5, ge=0, le=500)
     slippage_bps: float = Field(default=2, ge=0, le=500)
+    risk: RiskSettings | None = None
 
 
 class BacktestRequest(MarketRequest):

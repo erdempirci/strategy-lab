@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { CustomEditor, RulesCard } from "@/components/CustomStrategy";
 import EquityChart from "@/components/EquityChart";
+import { RISK_DEFAULTS, RiskFields, RiskReport } from "@/components/RiskPanel";
 import PriceChart from "@/components/PriceChart";
 import { OVERLAY_PALETTE } from "@/components/charts";
 import { compareAll, fetchStrategies, runBacktest, runCustom } from "@/lib/api";
@@ -20,9 +21,14 @@ const MARKET_DEFAULTS: MarketParams = {
   initial_capital: 10000,
   fee_bps: 10,
   slippage_bps: 2,
+  risk: RISK_DEFAULTS,
 };
 
 const TIMEFRAMES = ["15m", "30m", "1h", "4h", "1d"];
+const EXIT_TR: Record<string, string> = {
+  signal: "sinyal", stop: "stop", target: "hedef", daily_limit: "günlük limit",
+  max_total_loss: "toplam limit", end_of_data: "veri sonu",
+};
 
 export default function Home() {
   const [mode, setMode] = useState<"library" | "custom">("library");
@@ -179,6 +185,8 @@ export default function Home() {
             <label>Slippage (bps)<input type="number" min={0} step={0.5} value={market.slippage_bps} onChange={numM("slippage_bps")} /></label>
           </div>
           <p className="hint">1 bps = %0.01. Binance spot taker komisyonu ≈ 10 bps. Seans saatleri UTC.</p>
+          <h2>Risk kuralları</h2>
+          <RiskFields risk={market.risk ?? null} onChange={(r) => setM("risk", r)} />
           <button type="submit" disabled={!!loading || (mode === "custom" ? !custom.spec : !spec)}>{loading === "run" ? "Çalışıyor…" : "Backtest çalıştır"}</button>
           <button type="button" className="ghost" disabled={!!loading} onClick={compare}>
             {loading === "compare" ? "Karşılaştırılıyor…" : "Tüm stratejileri karşılaştır"}
@@ -199,7 +207,7 @@ export default function Home() {
               {comparison.synthetic_data && <p className="warn-text">Sentetik demo verisi — gerçek performans değildir.</p>}
               <div className="table-wrap">
                 <table>
-                  <thead><tr><th>#</th><th>Strateji</th><th className="r">Getiri</th><th className="r">Max DD</th><th className="r">İşlem</th><th className="r">Win %</th><th className="r">PF</th><th className="r">Sharpe</th><th className="r">Piyasada</th></tr></thead>
+                  <thead><tr><th>#</th><th>Strateji</th><th className="r">Getiri</th><th className="r">Max DD</th><th className="r">İşlem</th><th className="r">Win %</th><th className="r">PF</th><th className="r">Sharpe</th><th className="r">Piyasada</th>{comparison.results.some((r) => r.risk) && <><th className="r">En kötü gün</th><th className="r">Ay ort.</th><th>Kurallar</th></>}</tr></thead>
                   <tbody>
                     {compareRows.map((r, i) => (
                       <tr key={r.strategy} className={r.metrics ? "click" : "disabled"}
@@ -215,9 +223,16 @@ export default function Home() {
                             <td className="r">{fmt(r.metrics.profit_factor)}</td>
                             <td className={`r ${tone(r.metrics.sharpe_annualized)}`}>{fmt(r.metrics.sharpe_annualized)}</td>
                             <td className="r">%{fmt(r.metrics.exposure_pct, 0)}</td>
+                            {r.risk && (
+                              <>
+                                <td className="r neg">{pct(r.risk.worst_day_pct, 2)}</td>
+                                <td className={`r ${tone(r.risk.avg_monthly_return_pct)}`}>{pct(r.risk.avg_monthly_return_pct, 2)}</td>
+                                <td>{r.risk.account_failed ? <span className="tag bad sm">patladı</span> : r.risk.daily_limit_breaches ? <span className="tag warn sm">{r.risk.daily_limit_breaches} ihlal</span> : <span className="tag good sm">uydu</span>}</td>
+                              </>
+                            )}
                           </>
                         ) : (
-                          <td colSpan={7} className="muted">{r.error}</td>
+                          <td colSpan={10} className="muted">{r.error}</td>
                         )}
                       </tr>
                     ))}
@@ -260,6 +275,8 @@ export default function Home() {
                 <Metric label="Beklenti / işlem" value={fmt(m.expectancy_per_trade)} cls={tone(m.expectancy_per_trade)} />
               </div>
 
+              {result.risk && <RiskReport info={result.risk} />}
+
               <div className="panel">
                 <div className="panel-head">
                   <h2>Fiyat ve işlemler</h2>
@@ -297,7 +314,7 @@ export default function Home() {
                 </div>
                 <div className="table-wrap">
                   <table>
-                    <thead><tr><th>Giriş</th><th>Çıkış</th><th className="r">Giriş fiyatı</th><th className="r">Çıkış fiyatı</th><th className="r">Bar</th><th className="r">Getiri</th><th className="r">K/Z</th></tr></thead>
+                    <thead><tr><th>Giriş</th><th>Çıkış</th><th className="r">Giriş fiyatı</th><th className="r">Çıkış fiyatı</th><th className="r">Bar</th><th>Çıkış nedeni</th><th className="r">R</th><th className="r">Getiri</th><th className="r">K/Z</th></tr></thead>
                     <tbody>
                       {(showAllTrades ? trades : trades.slice(0, 25)).map((t) => (
                         <tr key={t.entry_time}>
@@ -306,6 +323,8 @@ export default function Home() {
                           <td className="r">{fmt(t.entry_price, 4)}</td>
                           <td className="r">{fmt(t.exit_price, 4)}</td>
                           <td className="r">{t.bars_held}</td>
+                          <td className="muted">{EXIT_TR[t.exit_reason ?? "signal"] ?? t.exit_reason}</td>
+                          <td className={`r ${tone(t.r_multiple ?? null)}`}>{t.r_multiple != null ? fmt(t.r_multiple) : "—"}</td>
                           <td className={`r ${tone(t.return_pct)}`}>{pct(t.return_pct)}</td>
                           <td className={`r ${tone(t.pnl)}`}>{fmt(t.pnl)}</td>
                         </tr>

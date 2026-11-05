@@ -145,6 +145,15 @@ def run_backtest(
         close_position(n - 1, closes[-1], forced=True)
         equity[-1] = cash
 
+    return summarize(times, equity, trades, total_fees, bars_in_market, initial_capital,
+                     timeframe, trading_minutes_per_year)
+
+
+def summarize(times: pd.Series, equity: np.ndarray, trades: list[dict], total_fees: float,
+              bars_in_market: int, initial_capital: float, timeframe: str,
+              trading_minutes_per_year: int = 365 * 24 * 60) -> dict:
+    """Metrics, monthly returns and a downsampled equity/drawdown curve."""
+    n = len(equity)
     equity_s = pd.Series(equity, index=pd.DatetimeIndex(times))
     bar_returns = equity_s.pct_change().fillna(0.0)
     pnls = np.array([t["pnl"] for t in trades], dtype=float)

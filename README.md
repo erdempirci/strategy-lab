@@ -83,6 +83,21 @@ DSL which is validated before anything runs — **no generated code is ever exec
 Endpoints: `GET /api/ai/status`, `POST /api/ai/strategy`, `POST /api/custom/validate`,
 `POST /api/custom/backtest`.
 
+## Risk engine (`api/app/services/risk_engine.py`)
+Send `"risk": {...}` with any backtest / compare request (the dashboard does by default):
+
+| Rule | Default | Behaviour |
+|------|---------|-----------|
+| `risk_per_trade_pct` | 0.5 | size = equity × risk ÷ loss-per-unit at the stop, capped at 1× equity |
+| `daily_loss_limit_pct` | 3 | vs. UTC day-start equity incl. open P&L at the bar low → close, no new trades that day |
+| `max_total_loss_pct` | 10 | static vs. initial capital → close, account stops trading ("failed") |
+| `stop_type` | `atr` | `atr` (`stop_atr_mult` × ATR(`stop_atr_period`)) or `pct` (`stop_pct`) |
+| `take_profit_rr` | 2 | target at R multiple; `null` = exit on signal only |
+
+Intrabar: the highest protective level is touched first; gaps fill at the open; if stop and
+target are both inside a bar the stop is assumed first. Entries need a fresh 0→1 signal.
+Custom strategies' `stop_loss_pct` / `take_profit_pct` override the stop/target.
+
 ## Backtest engine
 Trade-based, long/flat (`api/app/services/backtester.py`):
 - Signal at bar close → fill at **next bar open** (no look-ahead).
@@ -106,7 +121,8 @@ market calendars.
 1. ✅ Reliable trade-based backtest engine, real Binance data, MT5 CSV parser
 2. ✅ Dashboard
 3. ✅ Strategy library (8 strategies) + side-by-side comparison
-4. Stop-loss / take-profit engine → Fibonacci 0.618, FVG + market structure
+4. ✅ Risk engine: intrabar SL/TP, risk-based sizing, daily / total loss limits
+   (Fibonacci 0.618 and FVG strategies still to add)
 5. ✅ AI strategy builder → validated JSON DSL ("Kendi stratejim")
 6. Optimisation (grid search, multi-symbol / multi-timeframe)
 7. Validation: out-of-sample, walk-forward, Monte Carlo, overfitting checks

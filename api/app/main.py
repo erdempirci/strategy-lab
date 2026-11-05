@@ -18,10 +18,11 @@ from app.schemas import (
 )
 from app.services.backtester import run_backtest
 from app.services.market_data import demo_ohlcv
+from app.services.risk_engine import RiskConfig, run_risk_backtest
 from app.strategies import STRATEGIES, build_signal
 from app.strategies.dsl import StrategySpec, custom_signal, describe, overlay_lines
 
-ENGINE_VERSION = "0.4.0"
+ENGINE_VERSION = "0.5.0"
 
 app = FastAPI(
     title="Strategy Lab API",
@@ -92,9 +93,27 @@ def _run(strategy_id: str, raw_params: dict, frame, req) -> tuple[dict, dict]:
     if len(frame) < needed:
         raise ValueError(f"{spec.name} needs at least {needed} bars with these parameters")
     signal = build_signal(strategy_id, frame, params, req.timeframe)
-    result = run_backtest(frame, signal, req.timeframe, req.initial_capital,
-                          req.fee_bps, req.slippage_bps)
-    return params, result
+    return params, _execute(frame, signal, req)
+
+
+def _execute(frame, signal, req, stop_pct=None, take_profit_pct=None) -> dict:
+    """Simple engine, or the risk engine when the request carries risk settings."""
+    if req.risk is None:
+        return run_backtest(frame, signal, req.timeframe, req.initial_capital,
+                            req.fee_bps, req.slippage_bps)
+    return run_risk_backtest(frame, signal, RiskConfig(**req.risk.model_dump()), req.timeframe,
+                             req.initial_capital, req.fee_bps, req.slippage_bps,
+                             stop_pct_override=stop_pct, take_profit_pct_override=take_profit_pct)
+
+
+def _risk_assumptions(req) -> dict:
+    if req.risk is None:
+        return {}
+    return {"position": "risk-based size, capped at 1x equity (spot)",
+            "stops": "intrabar; stop assumed before target in the same bar; gaps fill at open",
+            "entries": "fresh 0->1 signal required (no re-entry after a stop)",
+            "daily_loss_limit": "vs. UTC day start equity, incl. open P&L at bar low",
+            "max_total_loss": "static, vs. initial capital"}
 
 
 ASSUMPTIONS = {
@@ -177,7 +196,7 @@ def create_backtest(request: BacktestRequest) -> dict:
         "synthetic_data": source == "deterministic_demo",
         "data_quality": quality_report(frame, request.timeframe),
         "engine_version": ENGINE_VERSION,
-        "assumptions": ASSUMPTIONS,
+        "assumptions": {**ASSUMPTIONS, **_risk_assumptions(request)},
         **result,
     }
 
@@ -185,6 +204,8 @@ def create_backtest(request: BacktestRequest) -> dict:
 COMPARE_METRICS = ("net_return_pct", "max_drawdown_pct", "trades", "win_rate_pct",
                    "profit_factor", "sharpe_annualized", "exposure_pct", "recovery_factor",
                    "total_fees")
+COMPARE_RISK = ("worst_day_pct", "daily_limit_breaches", "account_failed",
+                "avg_monthly_return_pct", "positive_months_pct")
 
 
 @router.post("/compare")
@@ -203,6 +224,8 @@ def compare_strategies(request: CompareRequest) -> dict:
             params, result = _run(strategy_id, {}, frame, request)
             row["parameters"] = params
             row["metrics"] = {k: result["metrics"][k] for k in COMPARE_METRICS}
+            if "risk" in result:
+                row["risk"] = {k: result["risk"][k] for k in COMPARE_RISK}
         except ValueError as exc:
             row["error"] = str(exc)
         rows.append(row)
@@ -246,8 +269,11 @@ def backtest_custom(request: CustomBacktestRequest) -> dict:
     if len(frame) < needed:
         raise HTTPException(status_code=400, detail=f"Bu strateji en az {needed} bar istiyor")
     try:
-        result = run_backtest(frame, custom_signal(spec, frame), request.timeframe,
-                              request.initial_capital, request.fee_bps, request.slippage_bps)
+        if request.risk is None:
+            result = _execute(frame, custom_signal(spec, frame), request)
+        else:
+            result = _execute(frame, custom_signal(spec, frame, apply_stops=False), request,
+                              stop_pct=spec.stop_loss_pct, take_profit_pct=spec.take_profit_pct)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not request.include_trades:
@@ -267,7 +293,9 @@ def backtest_custom(request: CustomBacktestRequest) -> dict:
         "synthetic_data": source == "deterministic_demo",
         "data_quality": quality_report(frame, request.timeframe),
         "engine_version": ENGINE_VERSION,
-        "assumptions": {**ASSUMPTIONS, "stops": "close-based, vs. actual fill price"},
+        "assumptions": {**ASSUMPTIONS, **_risk_assumptions(request),
+                        "stops": "intrabar (risk engine)" if request.risk
+                        else "close-based, vs. actual fill price"},
         **result,
     }
 
