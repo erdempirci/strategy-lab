@@ -241,7 +241,8 @@ class _Context:
         return res, valid
 
 
-def custom_signal(spec: StrategySpec, frame: pd.DataFrame) -> pd.Series:
+def custom_signal(spec: StrategySpec, frame: pd.DataFrame, apply_stops: bool = True) -> pd.Series:
+    """apply_stops=False leaves stop/target to the risk engine (intrabar)."""
     ctx = _Context(spec, frame)
     enter, v_enter = ctx.rules(spec.entry)
     exit_, v_exit = ctx.rules(spec.exit)
@@ -250,8 +251,8 @@ def custom_signal(spec: StrategySpec, frame: pd.DataFrame) -> pd.Series:
     warm = spec.warmup()
     opens = ctx.frame["open"].to_numpy(float)
     closes = ctx.frame["close"].to_numpy(float)
-    sl = spec.stop_loss_pct / 100 if spec.stop_loss_pct else None
-    tp = spec.take_profit_pct / 100 if spec.take_profit_pct else None
+    sl = spec.stop_loss_pct / 100 if spec.stop_loss_pct and apply_stops else None
+    tp = spec.take_profit_pct / 100 if spec.take_profit_pct and apply_stops else None
 
     out = np.full(len(frame), np.nan)
     pos, entry_bar, entry_px = 0.0, -1, np.nan
