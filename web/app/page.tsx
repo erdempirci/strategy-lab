@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { CustomEditor, RulesCard } from "@/components/CustomStrategy";
+import { DeskSide, DeskView } from "@/components/Desk";
 import { DiscoveryFields, DiscoveryReport } from "@/components/Discovery";
 import EquityChart from "@/components/EquityChart";
 import { RISK_DEFAULTS, RiskFields, RiskReport } from "@/components/RiskPanel";
@@ -9,6 +10,7 @@ import PriceChart from "@/components/PriceChart";
 import { OVERLAY_PALETTE } from "@/components/charts";
 import { compareAll, discover, fetchStrategies, runBacktest, runCustom } from "@/lib/api";
 import { useCustomStrategy } from "@/lib/useCustomStrategy";
+import { useDesk } from "@/lib/useDesk";
 import { fmt, pct, shortTime, tone } from "@/lib/format";
 import type {
   BacktestResult, CompareResult, DiscoveryCandidate, DiscoveryResult, MarketParams, RunRecord,
@@ -33,12 +35,13 @@ const EXIT_TR: Record<string, string> = {
 };
 
 export default function Home() {
-  const [mode, setMode] = useState<"library" | "custom" | "discover">("library");
+  const [mode, setMode] = useState<"library" | "custom" | "discover" | "desk">("library");
   const [discN, setDiscN] = useState(150);
   const [discSeed, setDiscSeed] = useState(42);
   const [discBars, setDiscBars] = useState(10000);
   const [discovery, setDiscovery] = useState<DiscoveryResult | null>(null);
   const custom = useCustomStrategy();
+  const desk = useDesk(mode === "desk");
   const [market, setMarket] = useState<MarketParams>(MARKET_DEFAULTS);
   const [strategies, setStrategies] = useState<StrategySpec[]>([]);
   const [strategyId, setStrategyId] = useState("ema_crossover");
@@ -170,7 +173,9 @@ export default function Home() {
             <button type="button" role="tab" aria-selected={mode === "library"} className={mode === "library" ? "on" : ""} onClick={() => setMode("library")}>Hazır</button>
             <button type="button" role="tab" aria-selected={mode === "custom"} className={mode === "custom" ? "on" : ""} onClick={() => setMode("custom")}>Kendi</button>
             <button type="button" role="tab" aria-selected={mode === "discover"} className={mode === "discover" ? "on" : ""} onClick={() => setMode("discover")}>Keşfet</button>
+            <button type="button" role="tab" aria-selected={mode === "desk"} className={mode === "desk" ? "on" : ""} onClick={() => setMode("desk")}>Masa</button>
           </div>
+          {mode === "desk" ? <DeskSide desk={desk} /> : (<>
           {mode === "discover" ? <DiscoveryFields n={discN} seed={discSeed} onN={setDiscN} onSeed={setDiscSeed} />
           : mode === "custom" ? <CustomEditor c={custom} /> : (<>
           <label>Strateji
@@ -239,10 +244,18 @@ export default function Home() {
             </button>
           )}
           {error && <p className="error">{error}</p>}
+          </>)}
         </form>
 
         <section className="results">
-          {mode === "discover" && discovery && <DiscoveryReport d={discovery} onOpen={openCandidate} />}
+          {mode === "desk" && <DeskView desk={desk} />}
+          {mode === "discover" && discovery && (
+            <DiscoveryReport d={discovery} onOpen={openCandidate} added={desk.added} busy={desk.busy}
+              onAdd={(c) => desk.addFromDiscovery(discovery, c)} />
+          )}
+          {mode === "discover" && (desk.notice || desk.error) && (
+            <div className={`banner ${desk.error ? "warn" : ""}`}>{desk.error ?? desk.notice}</div>
+          )}
           {mode === "discover" && !discovery && !loading && (
             <div className="panel empty">
               <h2>Strateji keşfi</h2>
@@ -250,7 +263,7 @@ export default function Home() {
             </div>
           )}
           {mode === "custom" && <RulesCard c={custom} />}
-          {comparison && (
+          {mode !== "desk" && comparison && (
             <div className="panel">
               <div className="panel-head">
                 <h2>Strateji karşılaştırması</h2>
@@ -304,7 +317,7 @@ export default function Home() {
             </div>
           )}
 
-          {result && m && (
+          {mode !== "desk" && result && m && (
             <>
               {result.synthetic_data ? (
                 <div className="banner warn">Sentetik demo verisi — bu sonuçlar gerçek piyasa performansı değildir.</div>
@@ -395,7 +408,7 @@ export default function Home() {
             </>
           )}
 
-          {runs.length > 1 && (
+          {mode !== "desk" && runs.length > 1 && (
             <div className="panel">
               <div className="panel-head"><h2>Çalıştırma geçmişi</h2><span className="muted">bu oturum · dokununca açılır</span></div>
               <div className="table-wrap">
@@ -421,7 +434,7 @@ export default function Home() {
             </div>
           )}
 
-          <p className="disclaimer">Geçmiş performans gelecekteki sonuçları garanti etmez. Bu panel yalnızca araştırma içindir. Hazır ve kendi stratejilerinin sonuçları örneklem içidir; görmediği veride sınamak için Keşfet sekmesini kullan.</p>
+          {mode !== "desk" && <p className="disclaimer">Geçmiş performans gelecekteki sonuçları garanti etmez. Bu panel yalnızca araştırma içindir. Hazır ve kendi stratejilerinin sonuçları örneklem içidir; görmediği veride sınamak için Keşfet sekmesini kullan.</p>}
         </section>
       </div>
     </main>

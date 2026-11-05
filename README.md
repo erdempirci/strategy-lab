@@ -23,6 +23,9 @@ Environment variables (all optional):
 | `AI_ACCESS_CODE` | if set, the AI builder asks for this code (protects your API credits) |
 | `ANTHROPIC_MODEL` | default `claude-sonnet-5-5` |
 | `BINANCE_BASE_URL` | default `https://data-api.binance.vision` |
+| `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | Masa journal storage (server side only) |
+| `DESK_ACCESS_CODE` | required to change the desk (add strategies, settings, run now) |
+| `CRON_SECRET` | lets the hourly GitHub Action run the desk |
 
 - `/` dashboard
 - `/api/health` · `/api/docs` (Swagger) · `GET /api/strategies` · `POST /api/backtests` ·
@@ -117,6 +120,34 @@ profitable, luck not ruled out) · **failed holdout**.
 Calibration (tests): 0 robust picks on random-walk markets across seeds; finds a planted
 momentum edge. On real markets "nothing robust found" is a normal, useful outcome.
 
+## Masa — trading desk (`api/app/desk/`)
+Forward-tests discovered strategies on a **paper** account, hourly. Rule-based roles, no LLM,
+no orders:
+
+| Role | Does |
+|------|------|
+| Tarayıcı | fresh entry signal of a desk strategy on the last closed bar; volume ≥ 2× its 30-day average on the watchlist |
+| Giriş-Çıkış | entry = next bar open, stop = strategy's ATR multiple, target = its R:R |
+| Risk | sizes from desk equity (0.5%/trade); **RED** if today −3%, total −10%, open-position cap, or if *all open stops plus this one* would cross a limit |
+| Şüpheci | AL / BEKLE / GEÇ: waits on "promising" strategies until 10 live trades prove them, blocks a strategy whose live PF fell < 0.8, waits on extreme volatility, same-symbol exposure or data gaps |
+| Günlükçü | journals every decision with each role's message; weekly report incl. an audit of what the Şüpheci's vetoes would have earned |
+
+- Only **robust/promising** Keşfet finalists can join the desk ("Masaya ekle"); timeframes ≥ 1h.
+- Paper trades are produced by `run_risk_backtest` itself on a signal that keeps only approved
+  entries, so desk results and backtests cannot drift apart (tested). Closed trades are frozen;
+  every signal, approved or not, is also tracked in a **shadow** book.
+- Only the signal of the last closed bar can be approved; older ones are journaled as missed.
+- Because Risk gates on worst case (every open stop hit), the daily / total limits can only be
+  crossed by price gaps; positions are not force-closed.
+- Endpoints: `GET /api/desk/status|state|report`, `POST /api/desk/run`,
+  `POST /api/desk/strategies`, `PATCH /api/desk/strategies/{id}`, `PUT /api/desk/settings`.
+
+Setup: create a Supabase project → run `supabase/migrations/001_desk.sql` in the SQL editor →
+set `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `DESK_ACCESS_CODE`, `CRON_SECRET` on Vercel →
+add repo secrets `DESK_URL` and `CRON_SECRET` for `.github/workflows/desk.yml` (hourly at :02;
+Vercel Hobby crons are daily-only). GitHub pauses scheduled workflows after 60 days without
+repo activity; re-enable from the Actions tab.
+
 ## Backtest engine
 Trade-based, long/flat (`api/app/services/backtester.py`):
 - Signal at bar close → fill at **next bar open** (no look-ahead).
@@ -145,5 +176,6 @@ market calendars.
 5. ✅ AI strategy builder → validated JSON DSL ("Kendi stratejim")
 6. ✅ Discovery: search + train/validation/holdout + deflated Sharpe
 7. Next: walk-forward folds, Monte Carlo, multi-symbol robustness
-8. Funded / prop-firm risk simulator
-9. Paper trading
+8. ✅ Masa: hourly paper-trading desk with rule-based roles and a journal
+9. NQ/ES futures data adapter for the desk
+10. Funded / prop-firm risk simulator

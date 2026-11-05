@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from app.ai.translator import AIError, translate
 from app.data_adapters.binance import BinanceDataError, fetch_binance_ohlcv
 from app.data_adapters.normalize import quality_report
+from app.desk.api import router as desk_router
 from app.discovery.engine import run_discovery
 from app.schemas import (
     AIStrategyRequest,
@@ -24,7 +25,7 @@ from app.services.risk_engine import RiskConfig, run_risk_backtest
 from app.strategies import STRATEGIES, build_signal
 from app.strategies.dsl import StrategySpec, custom_signal, describe, overlay_lines
 
-ENGINE_VERSION = "0.6.0"
+ENGINE_VERSION = "0.7.0"
 
 app = FastAPI(
     title="Strategy Lab API",
@@ -345,5 +346,6 @@ def ai_strategy(request: AIStrategyRequest) -> dict:
     return {**out, "rules": describe(spec)}
 
 
+router.include_router(desk_router)
 app.include_router(router, prefix="/api")
 app.include_router(router, include_in_schema=False)
