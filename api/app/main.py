@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from app.ai.translator import AIError, translate
 from app.data_adapters.binance import BinanceDataError, fetch_binance_ohlcv
 from app.data_adapters.normalize import quality_report
+from app.data_adapters.stocks import StockDataError, fetch_stock_daily
 from app.discovery.engine import run_discovery
 from app.schemas import (
     AIStrategyRequest,
@@ -51,11 +52,13 @@ def _load_frame(source: str, symbol: str, timeframe: str, bars: int):
     try:
         if source == "binance":
             frame, label = fetch_binance_ohlcv(symbol, timeframe, bars), "binance_spot"
+        elif source == "stocks":
+            frame, label = fetch_stock_daily(symbol, timeframe, bars)
         else:
             frame = demo_ohlcv(symbol=symbol, timeframe=timeframe, bars=bars)
             label = "deterministic_demo"
         return frame.sort_values("timestamp").reset_index(drop=True), label
-    except BinanceDataError as exc:
+    except (BinanceDataError, StockDataError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -98,14 +101,25 @@ def _run(strategy_id: str, raw_params: dict, frame, req) -> tuple[dict, dict]:
     return params, _execute(frame, signal, req)
 
 
+def _year_minutes(req) -> int:
+    """Calendar for annualising Sharpe: ~252 sessions on stock exchanges, 365 days in crypto."""
+    return 252 * 24 * 60 if req.data_source == "stocks" else 365 * 24 * 60
+
+
+def _quality(frame, req) -> dict:
+    normal = pd.Timedelta(days=4) if req.data_source == "stocks" else None
+    return quality_report(frame, req.timeframe, normal)
+
+
 def _execute(frame, signal, req, stop_pct=None, take_profit_pct=None) -> dict:
     """Simple engine, or the risk engine when the request carries risk settings."""
     if req.risk is None:
         return run_backtest(frame, signal, req.timeframe, req.initial_capital,
-                            req.fee_bps, req.slippage_bps)
+                            req.fee_bps, req.slippage_bps, _year_minutes(req))
     return run_risk_backtest(frame, signal, RiskConfig(**req.risk.model_dump()), req.timeframe,
                              req.initial_capital, req.fee_bps, req.slippage_bps,
-                             stop_pct_override=stop_pct, take_profit_pct_override=take_profit_pct)
+                             stop_pct_override=stop_pct, take_profit_pct_override=take_profit_pct,
+                             trading_minutes_per_year=_year_minutes(req))
 
 
 def _risk_assumptions(req) -> dict:
@@ -125,7 +139,7 @@ ASSUMPTIONS = {
     "fees": "fee_bps of notional on entry and exit",
     "slippage": "slippage_bps adverse to fill price",
     "open_position_at_end": "closed at last close, flagged forced_exit",
-    "sharpe_annualization": "24/7 market calendar",
+    "sharpe_annualization": "365 days (crypto) / 252 sessions (stocks)",
     "session_hours": "UTC",
     "live_trading": False,
 }
@@ -196,7 +210,7 @@ def create_backtest(request: BacktestRequest) -> dict:
         "parameters": params,
         "data_source": source,
         "synthetic_data": source == "deterministic_demo",
-        "data_quality": quality_report(frame, request.timeframe),
+        "data_quality": _quality(frame, request),
         "engine_version": ENGINE_VERSION,
         "assumptions": {**ASSUMPTIONS, **_risk_assumptions(request)},
         **result,
@@ -236,7 +250,7 @@ def compare_strategies(request: CompareRequest) -> dict:
         "timeframe": request.timeframe,
         "data_source": source,
         "synthetic_data": source == "deterministic_demo",
-        "data_quality": quality_report(frame, request.timeframe),
+        "data_quality": _quality(frame, request),
         "engine_version": ENGINE_VERSION,
         "note": "Default parameters, in-sample only. Not validated out-of-sample.",
         "results": rows,
@@ -293,7 +307,7 @@ def backtest_custom(request: CustomBacktestRequest) -> dict:
         "rules": describe(spec),
         "data_source": source,
         "synthetic_data": source == "deterministic_demo",
-        "data_quality": quality_report(frame, request.timeframe),
+        "data_quality": _quality(frame, request),
         "engine_version": ENGINE_VERSION,
         "assumptions": {**ASSUMPTIONS, **_risk_assumptions(request),
                         "stops": "intrabar (risk engine)" if request.risk
@@ -318,7 +332,7 @@ def discover(request: DiscoverRequest) -> dict:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"symbol": request.symbol, "timeframe": request.timeframe, "data_source": source,
             "synthetic_data": source == "deterministic_demo",
-            "data_quality": quality_report(frame, request.timeframe),
+            "data_quality": _quality(frame, request),
             "risk": risk.model_dump(), "engine_version": ENGINE_VERSION, **out}
 
 

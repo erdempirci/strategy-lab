@@ -23,11 +23,16 @@ def normalize_ohlcv(frame: pd.DataFrame) -> pd.DataFrame:
     return data.reset_index(drop=True)
 
 
-def quality_report(frame: pd.DataFrame, timeframe: str) -> dict:
-    """Describe problems a backtest should know about. Does not modify data."""
+def quality_report(frame: pd.DataFrame, timeframe: str,
+                   normal_gap: pd.Timedelta | None = None) -> dict:
+    """Describe problems a backtest should know about. Does not modify data.
+
+    normal_gap: largest gap that is expected (e.g. 4 days for weekends + holidays on stock
+    exchanges); longer gaps are reported.
+    """
     step = pd.Timedelta(minutes=timeframe_minutes(timeframe))
     deltas = frame["timestamp"].diff().dropna()
-    gaps = deltas[deltas > step]
+    gaps = deltas[deltas > max(step, normal_gap or step)]
     bad_hl = (
         (frame["high"] < frame[["open", "close"]].max(axis=1))
         | (frame["low"] > frame[["open", "close"]].min(axis=1))
