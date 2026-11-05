@@ -1,5 +1,32 @@
 export type DataSource = "demo" | "binance";
 
+export interface RiskSettings {
+  risk_per_trade_pct: number;
+  daily_loss_limit_pct: number | null;
+  max_total_loss_pct: number | null;
+  stop_type: "atr" | "pct";
+  stop_atr_period: number;
+  stop_atr_mult: number;
+  stop_pct: number;
+  take_profit_rr: number | null;
+}
+
+export interface RiskInfo {
+  worst_day_pct: number;
+  worst_day: string | null;
+  daily_limit_breaches: number;
+  account_failed: boolean;
+  failed_at: string | null;
+  lowest_equity_pct_of_initial: number;
+  avg_r_multiple: number | null;
+  avg_position_pct: number;
+  avg_monthly_return_pct: number;
+  positive_months_pct: number;
+  exit_reasons: Record<string, number>;
+  trading_days: number;
+  config: RiskSettings;
+}
+
 export interface MarketParams {
   data_source: DataSource;
   symbol: string;
@@ -8,6 +35,7 @@ export interface MarketParams {
   initial_capital: number;
   fee_bps: number;
   slippage_bps: number;
+  risk?: RiskSettings | null;
 }
 
 export interface ParamSpec {
@@ -39,6 +67,9 @@ export interface Trade {
   pnl: number;
   return_pct: number;
   forced_exit: boolean;
+  exit_reason?: string;
+  r_multiple?: number | null;
+  position_pct?: number;
 }
 
 export interface Candle {
@@ -102,6 +133,7 @@ export interface BacktestResult {
   candles: Candle[];
   overlays: OverlayLine[];
   rules?: RulesText;
+  risk?: RiskInfo;
   spec?: StrategyJSON;
 }
 
@@ -144,7 +176,9 @@ export interface CompareResult {
   data_quality: DataQuality;
   note: string;
   results: { strategy: string; name: string; parameters?: Record<string, number>;
-             metrics?: CompareMetrics; error?: string }[];
+             metrics?: CompareMetrics; error?: string;
+             risk?: Pick<RiskInfo, "worst_day_pct" | "daily_limit_breaches" | "account_failed" |
+                                   "avg_monthly_return_pct" | "positive_months_pct"> }[];
 }
 
 export interface RunRecord {
