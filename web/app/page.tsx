@@ -67,6 +67,15 @@ export default function Home() {
     setMarket((m) => ({ ...m, [key]: value }));
   const numM = (key: keyof MarketParams) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setM(key, Number(e.target.value) as never);
+  const changeSource = (src: MarketParams["data_source"]) =>
+    setMarket((m) => {
+      const isPair = m.symbol.includes("/");
+      if (src === "stocks") {
+        return { ...m, data_source: src, symbol: isPair ? "SPY" : m.symbol, timeframe: "1d",
+                 bars: Math.max(m.bars, 5000), fee_bps: Math.min(m.fee_bps, 2) };
+      }
+      return { ...m, data_source: src, symbol: isPair ? m.symbol : "BTC/USDT" };
+    });
   const setP = (name: string, value: number) =>
     setParamValues((pv) => ({ ...pv, [strategyId]: { ...pv[strategyId], [name]: value } }));
   const resetParams = () => spec && setParamValues((pv) => ({
@@ -176,7 +185,12 @@ export default function Home() {
           <label>Strateji
             <select value={strategyId} onChange={(e) => setStrategyId(e.target.value)}>
               {strategies.length === 0 && <option>Yükleniyor…</option>}
-              {strategies.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+              <optgroup label="Hazır stratejiler">
+                {strategies.filter((s) => s.category !== "video").map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </optgroup>
+              <optgroup label="Video: 6 RSI stratejisi (Quantified Strategies)">
+                {strategies.filter((s) => s.category === "video").map((s) => <option key={s.id} value={s.id}>{s.name.replace(" (QS video)", "")}</option>)}
+              </optgroup>
             </select>
           </label>
           {spec && <p className="hint">{spec.description}</p>}
@@ -191,13 +205,17 @@ export default function Home() {
               ))}
             </div>
           )}
-          {spec && <button type="button" className="link" onClick={resetParams}>Varsayılanlara dön</button>}
+          {spec && spec.params.length > 0 && <button type="button" className="link" onClick={resetParams}>Varsayılanlara dön</button>}
+          {spec?.category === "video" && market.timeframe !== "1d" && (
+            <p className="hint warn-text">Bu strateji günlük grafik için tasarlandı; zaman dilimini 1d yap.</p>
+          )}
           </>)}
 
           <h2>Piyasa</h2>
           <label>Veri kaynağı
-            <select value={market.data_source} onChange={(e) => setM("data_source", e.target.value as MarketParams["data_source"])}>
-              <option value="binance">Binance (gerçek veri)</option>
+            <select value={market.data_source} onChange={(e) => changeSource(e.target.value as MarketParams["data_source"])}>
+              <option value="binance">Binance (kripto, gerçek veri)</option>
+              <option value="stocks">Hisse / ETF (günlük, örn. SPY)</option>
               <option value="demo">Demo (sentetik)</option>
             </select>
           </label>
@@ -207,7 +225,7 @@ export default function Home() {
             </label>
             <label>Zaman dilimi
               <select value={market.timeframe} onChange={(e) => setM("timeframe", e.target.value)}>
-                {TIMEFRAMES.map((t) => <option key={t}>{t}</option>)}
+                {(market.data_source === "stocks" ? ["1d"] : TIMEFRAMES).map((t) => <option key={t}>{t}</option>)}
               </select>
             </label>
           </div>

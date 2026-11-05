@@ -18,7 +18,7 @@ class RiskSettings(BaseModel):
 class MarketRequest(BaseModel):
     symbol: str = Field(default="BTC/USDT", min_length=3, max_length=30)
     timeframe: str = Field(default="1h", min_length=2, max_length=5)
-    data_source: Literal["demo", "binance"] = "demo"
+    data_source: Literal["demo", "binance", "stocks"] = "demo"
     bars: int = Field(default=1000, ge=100, le=20_000)
     initial_capital: float = Field(default=10_000, gt=0)
     fee_bps: float = Field(default=5, ge=0, le=500)
