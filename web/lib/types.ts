@@ -1,15 +1,31 @@
 export type DataSource = "demo" | "binance";
 
-export interface BacktestParams {
+export interface MarketParams {
   data_source: DataSource;
   symbol: string;
   timeframe: string;
   bars: number;
-  fast_period: number;
-  slow_period: number;
   initial_capital: number;
   fee_bps: number;
   slippage_bps: number;
+}
+
+export interface ParamSpec {
+  name: string;
+  label: string;
+  default: number;
+  min: number;
+  max: number;
+  step: number;
+  integer: boolean;
+}
+
+export interface StrategySpec {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  params: ParamSpec[];
 }
 
 export interface Trade {
@@ -31,8 +47,12 @@ export interface Candle {
   high: number;
   low: number;
   close: number;
-  ema_fast: number | null;
-  ema_slow: number | null;
+}
+
+export interface OverlayLine {
+  name: string;
+  color: string | null;
+  data: { time: number; value: number }[];
 }
 
 export interface Metrics {
@@ -69,7 +89,8 @@ export interface BacktestResult {
   symbol: string;
   timeframe: string;
   strategy: string;
-  parameters: { fast_period: number; slow_period: number };
+  strategy_name: string;
+  parameters: Record<string, number>;
   data_source: string;
   synthetic_data: boolean;
   data_quality: DataQuality;
@@ -79,10 +100,28 @@ export interface BacktestResult {
   monthly_returns_pct: { month: string; return_pct: number }[];
   equity_curve: { timestamp: string; equity: number; drawdown_pct: number }[];
   candles: Candle[];
+  overlays: OverlayLine[];
+}
+
+export type CompareMetrics = Pick<
+  Metrics,
+  "net_return_pct" | "max_drawdown_pct" | "trades" | "win_rate_pct" | "profit_factor" |
+  "sharpe_annualized" | "exposure_pct" | "recovery_factor" | "total_fees"
+>;
+
+export interface CompareResult {
+  symbol: string;
+  timeframe: string;
+  data_source: string;
+  synthetic_data: boolean;
+  data_quality: DataQuality;
+  note: string;
+  results: { strategy: string; name: string; parameters?: Record<string, number>;
+             metrics?: CompareMetrics; error?: string }[];
 }
 
 export interface RunRecord {
   id: number;
-  params: BacktestParams;
+  label: string;
   result: BacktestResult;
 }

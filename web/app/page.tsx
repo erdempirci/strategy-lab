@@ -1,19 +1,20 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import EquityChart from "@/components/EquityChart";
 import PriceChart from "@/components/PriceChart";
-import { runBacktest } from "@/lib/api";
+import { OVERLAY_PALETTE } from "@/components/charts";
+import { compareAll, fetchStrategies, runBacktest } from "@/lib/api";
 import { fmt, pct, shortTime, tone } from "@/lib/format";
-import type { BacktestParams, BacktestResult, RunRecord } from "@/lib/types";
+import type {
+  BacktestResult, CompareResult, MarketParams, RunRecord, StrategySpec,
+} from "@/lib/types";
 
-const DEFAULTS: BacktestParams = {
+const MARKET_DEFAULTS: MarketParams = {
   data_source: "binance",
   symbol: "BTC/USDT",
   timeframe: "1h",
   bars: 1000,
-  fast_period: 12,
-  slow_period: 26,
   initial_capital: 10000,
   fee_bps: 10,
   slippage_bps: 2,
@@ -22,34 +23,83 @@ const DEFAULTS: BacktestParams = {
 const TIMEFRAMES = ["15m", "30m", "1h", "4h", "1d"];
 
 export default function Home() {
-  const [params, setParams] = useState<BacktestParams>(DEFAULTS);
+  const [market, setMarket] = useState<MarketParams>(MARKET_DEFAULTS);
+  const [strategies, setStrategies] = useState<StrategySpec[]>([]);
+  const [strategyId, setStrategyId] = useState("ema_crossover");
+  const [paramValues, setParamValues] = useState<Record<string, Record<string, number>>>({});
   const [result, setResult] = useState<BacktestResult | null>(null);
   const [runs, setRuns] = useState<RunRecord[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [comparison, setComparison] = useState<CompareResult | null>(null);
+  const [loading, setLoading] = useState<"run" | "compare" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showAllTrades, setShowAllTrades] = useState(false);
 
-  const set = <K extends keyof BacktestParams>(key: K, value: BacktestParams[K]) =>
-    setParams((p) => ({ ...p, [key]: value }));
+  useEffect(() => {
+    fetchStrategies()
+      .then((list) => {
+        setStrategies(list);
+        setParamValues(Object.fromEntries(list.map((s) =>
+          [s.id, Object.fromEntries(s.params.map((p) => [p.name, p.default]))])));
+      })
+      .catch((e) => setError(`Strateji listesi alınamadı: ${e.message}`));
+  }, []);
 
-  async function onRun(e: React.FormEvent) {
-    e.preventDefault();
-    setLoading(true);
+  const spec = strategies.find((s) => s.id === strategyId);
+  const values = paramValues[strategyId] || {};
+
+  const setM = <K extends keyof MarketParams>(key: K, value: MarketParams[K]) =>
+    setMarket((m) => ({ ...m, [key]: value }));
+  const numM = (key: keyof MarketParams) => (e: React.ChangeEvent<HTMLInputElement>) =>
+    setM(key, Number(e.target.value) as never);
+  const setP = (name: string, value: number) =>
+    setParamValues((pv) => ({ ...pv, [strategyId]: { ...pv[strategyId], [name]: value } }));
+  const resetParams = () => spec && setParamValues((pv) => ({
+    ...pv, [strategyId]: Object.fromEntries(spec.params.map((p) => [p.name, p.default])),
+  }));
+
+  async function run(id = strategyId, params = values) {
+    setLoading("run");
     setError(null);
     try {
-      const res = await runBacktest(params);
+      const res = await runBacktest(market, id, params);
       setResult(res);
       setShowAllTrades(false);
-      setRuns((r) => [{ id: Date.now(), params: { ...params }, result: res }, ...r].slice(0, 12));
+      const label = Object.values(res.parameters).join("/");
+      setRuns((r) => [{ id: Date.now(), label, result: res }, ...r].slice(0, 15));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setLoading(false);
+      setLoading(null);
     }
   }
 
-  const num = (key: keyof BacktestParams) => (e: React.ChangeEvent<HTMLInputElement>) =>
-    set(key, Number(e.target.value) as never);
+  async function compare() {
+    setLoading("compare");
+    setError(null);
+    try {
+      setComparison(await compareAll(market));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(null);
+    }
+  }
+
+  function openFromCompare(id: string) {
+    const s = strategies.find((x) => x.id === id);
+    if (!s) return;
+    const defaults = Object.fromEntries(s.params.map((p) => [p.name, p.default]));
+    setStrategyId(id);
+    setParamValues((pv) => ({ ...pv, [id]: defaults }));
+    run(id, defaults);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  const compareRows = useMemo(() => {
+    if (!comparison) return [];
+    return [...comparison.results].sort((a, b) =>
+      (b.metrics?.net_return_pct ?? -Infinity) - (a.metrics?.net_return_pct ?? -Infinity));
+  }, [comparison]);
 
   const m = result?.metrics;
   const trades = result ? [...result.trades].reverse() : [];
@@ -65,52 +115,110 @@ export default function Home() {
       </header>
 
       <div className="layout">
-        <form className="panel params" onSubmit={onRun}>
+        <form className="panel params" onSubmit={(e) => { e.preventDefault(); run(); }}>
           <h2>Strateji</h2>
           <label>Strateji
-            <select value="ema_crossover" disabled><option value="ema_crossover">EMA Crossover (long/flat)</option></select>
+            <select value={strategyId} onChange={(e) => setStrategyId(e.target.value)}>
+              {strategies.length === 0 && <option>Yükleniyor…</option>}
+              {strategies.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
           </label>
+          {spec && <p className="hint">{spec.description}</p>}
+          {spec && (
+            <div className="row">
+              {spec.params.map((p) => (
+                <label key={p.name}>{p.label}
+                  <input type="number" min={p.min} max={p.max} step={p.step}
+                    value={values[p.name] ?? p.default}
+                    onChange={(e) => setP(p.name, Number(e.target.value))} />
+                </label>
+              ))}
+            </div>
+          )}
+          {spec && <button type="button" className="link" onClick={resetParams}>Varsayılanlara dön</button>}
+
+          <h2>Piyasa</h2>
           <label>Veri kaynağı
-            <select value={params.data_source} onChange={(e) => set("data_source", e.target.value as BacktestParams["data_source"])}>
+            <select value={market.data_source} onChange={(e) => setM("data_source", e.target.value as MarketParams["data_source"])}>
               <option value="binance">Binance (gerçek veri)</option>
               <option value="demo">Demo (sentetik)</option>
             </select>
           </label>
           <div className="row">
             <label>Sembol
-              <input value={params.symbol} onChange={(e) => set("symbol", e.target.value.toUpperCase())} />
+              <input value={market.symbol} onChange={(e) => setM("symbol", e.target.value.toUpperCase())} />
             </label>
             <label>Zaman dilimi
-              <select value={params.timeframe} onChange={(e) => set("timeframe", e.target.value)}>
+              <select value={market.timeframe} onChange={(e) => setM("timeframe", e.target.value)}>
                 {TIMEFRAMES.map((t) => <option key={t}>{t}</option>)}
               </select>
             </label>
           </div>
           <label>Bar sayısı
-            <input type="number" min={100} max={5000} step={100} value={params.bars} onChange={num("bars")} />
+            <input type="number" min={100} max={5000} step={100} value={market.bars} onChange={numM("bars")} />
           </label>
-          <div className="row">
-            <label>Hızlı EMA<input type="number" min={2} value={params.fast_period} onChange={num("fast_period")} /></label>
-            <label>Yavaş EMA<input type="number" min={3} value={params.slow_period} onChange={num("slow_period")} /></label>
-          </div>
+
           <h2>Maliyet ve sermaye</h2>
           <label>Başlangıç sermayesi
-            <input type="number" min={1} value={params.initial_capital} onChange={num("initial_capital")} />
+            <input type="number" min={1} value={market.initial_capital} onChange={numM("initial_capital")} />
           </label>
           <div className="row">
-            <label>Komisyon (bps)<input type="number" min={0} step={0.5} value={params.fee_bps} onChange={num("fee_bps")} /></label>
-            <label>Slippage (bps)<input type="number" min={0} step={0.5} value={params.slippage_bps} onChange={num("slippage_bps")} /></label>
+            <label>Komisyon (bps)<input type="number" min={0} step={0.5} value={market.fee_bps} onChange={numM("fee_bps")} /></label>
+            <label>Slippage (bps)<input type="number" min={0} step={0.5} value={market.slippage_bps} onChange={numM("slippage_bps")} /></label>
           </div>
-          <p className="hint">1 bps = %0.01. Binance spot taker komisyonu ≈ 10 bps.</p>
-          <button type="submit" disabled={loading}>{loading ? "Çalışıyor…" : "Backtest çalıştır"}</button>
+          <p className="hint">1 bps = %0.01. Binance spot taker komisyonu ≈ 10 bps. Seans saatleri UTC.</p>
+          <button type="submit" disabled={!!loading || !spec}>{loading === "run" ? "Çalışıyor…" : "Backtest çalıştır"}</button>
+          <button type="button" className="ghost" disabled={!!loading} onClick={compare}>
+            {loading === "compare" ? "Karşılaştırılıyor…" : "Tüm stratejileri karşılaştır"}
+          </button>
           {error && <p className="error">{error}</p>}
         </form>
 
         <section className="results">
-          {!result && !loading && (
+          {comparison && (
+            <div className="panel">
+              <div className="panel-head">
+                <h2>Strateji karşılaştırması</h2>
+                <span className="muted">
+                  {comparison.symbol} {comparison.timeframe} · {comparison.data_quality.bars} bar · varsayılan parametreler
+                </span>
+              </div>
+              {comparison.synthetic_data && <p className="warn-text">Sentetik demo verisi — gerçek performans değildir.</p>}
+              <div className="table-wrap">
+                <table>
+                  <thead><tr><th>#</th><th>Strateji</th><th className="r">Getiri</th><th className="r">Max DD</th><th className="r">İşlem</th><th className="r">Win %</th><th className="r">PF</th><th className="r">Sharpe</th><th className="r">Piyasada</th></tr></thead>
+                  <tbody>
+                    {compareRows.map((r, i) => (
+                      <tr key={r.strategy} className={r.metrics ? "click" : "disabled"}
+                        onClick={() => r.metrics && openFromCompare(r.strategy)}>
+                        <td className="muted">{r.metrics ? i + 1 : "—"}</td>
+                        <td>{r.name}</td>
+                        {r.metrics ? (
+                          <>
+                            <td className={`r ${tone(r.metrics.net_return_pct)}`}>{pct(r.metrics.net_return_pct, 1)}</td>
+                            <td className="r neg">{pct(r.metrics.max_drawdown_pct, 1)}</td>
+                            <td className="r">{r.metrics.trades}</td>
+                            <td className="r">{fmt(r.metrics.win_rate_pct, 1)}</td>
+                            <td className="r">{fmt(r.metrics.profit_factor)}</td>
+                            <td className={`r ${tone(r.metrics.sharpe_annualized)}`}>{fmt(r.metrics.sharpe_annualized)}</td>
+                            <td className="r">%{fmt(r.metrics.exposure_pct, 0)}</td>
+                          </>
+                        ) : (
+                          <td colSpan={7} className="muted">{r.error}</td>
+                        )}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="hint table-note">Varsayılan parametreler, yalnızca örneklem içi (in-sample) sonuç; henüz doğrulanmadı. Detay için bir satıra dokun.</p>
+            </div>
+          )}
+
+          {!result && !loading && !comparison && (
             <div className="panel empty">
               <h2>Henüz sonuç yok</h2>
-              <p className="muted">Soldaki parametreleri seçip backtest çalıştır. Sinyal mum kapanışında, emir bir sonraki mumun açılışında gerçekleşir; komisyon ve slippage dahildir.</p>
+              <p className="muted">Bir strateji seçip backtest çalıştır ya da tüm stratejileri aynı veride karşılaştır. Sinyal mum kapanışında, emir bir sonraki mumun açılışında gerçekleşir; komisyon ve slippage dahildir.</p>
             </div>
           )}
 
@@ -120,7 +228,7 @@ export default function Home() {
                 <div className="banner warn">Sentetik demo verisi — bu sonuçlar gerçek piyasa performansı değildir.</div>
               ) : (
                 <div className="banner">
-                  {result.data_source} · {result.symbol} {result.timeframe} · {shortTime(result.data_quality.start ?? "")} → {shortTime(result.data_quality.end ?? "")} · {result.data_quality.bars} bar
+                  <b className="plain">{result.strategy_name}</b> · {result.data_source} · {result.symbol} {result.timeframe} · {shortTime(result.data_quality.start ?? "")} → {shortTime(result.data_quality.end ?? "")} · {result.data_quality.bars} bar
                   {result.data_quality.gaps > 0 && <> · <b>{result.data_quality.missing_bars_estimate} eksik bar</b></>}
                 </div>
               )}
@@ -139,9 +247,13 @@ export default function Home() {
               <div className="panel">
                 <div className="panel-head">
                   <h2>Fiyat ve işlemler</h2>
-                  <span className="legend"><i style={{ background: "#f2b84b" }} />EMA {result.parameters.fast_period}<i style={{ background: "#6aa8ff" }} />EMA {result.parameters.slow_period}</span>
+                  <span className="legend">
+                    {result.overlays.map((o, i) => (
+                      <span key={o.name}><i style={{ background: o.color || OVERLAY_PALETTE[i % OVERLAY_PALETTE.length] }} />{o.name}</span>
+                    ))}
+                  </span>
                 </div>
-                <PriceChart candles={result.candles} trades={result.trades} />
+                <PriceChart candles={result.candles} overlays={result.overlays} trades={result.trades} />
               </div>
 
               <div className="panel">
@@ -196,21 +308,20 @@ export default function Home() {
 
           {runs.length > 1 && (
             <div className="panel">
-              <div className="panel-head"><h2>Çalıştırma karşılaştırması</h2><span className="muted">bu oturum</span></div>
+              <div className="panel-head"><h2>Çalıştırma geçmişi</h2><span className="muted">bu oturum · dokununca açılır</span></div>
               <div className="table-wrap">
                 <table>
-                  <thead><tr><th>Kaynak</th><th>Sembol</th><th>TF</th><th>EMA</th><th className="r">Getiri</th><th className="r">Max DD</th><th className="r">İşlem</th><th className="r">Win %</th><th className="r">PF</th><th className="r">Sharpe</th></tr></thead>
+                  <thead><tr><th>Strateji</th><th>Parametre</th><th>Sembol</th><th>TF</th><th className="r">Getiri</th><th className="r">Max DD</th><th className="r">İşlem</th><th className="r">PF</th><th className="r">Sharpe</th></tr></thead>
                   <tbody>
                     {runs.map((r) => (
-                      <tr key={r.id} className={r.result === result ? "active" : ""} onClick={() => setResult(r.result)}>
-                        <td>{r.result.synthetic_data ? "demo" : "binance"}</td>
-                        <td>{r.params.symbol}</td>
-                        <td>{r.params.timeframe}</td>
-                        <td>{r.params.fast_period}/{r.params.slow_period}</td>
+                      <tr key={r.id} className={r.result === result ? "click active" : "click"} onClick={() => setResult(r.result)}>
+                        <td>{r.result.strategy_name}{r.result.synthetic_data && <span className="tag sm">demo</span>}</td>
+                        <td>{r.label}</td>
+                        <td>{r.result.symbol}</td>
+                        <td>{r.result.timeframe}</td>
                         <td className={`r ${tone(r.result.metrics.net_return_pct)}`}>{pct(r.result.metrics.net_return_pct, 1)}</td>
                         <td className="r neg">{pct(r.result.metrics.max_drawdown_pct, 1)}</td>
                         <td className="r">{r.result.metrics.trades}</td>
-                        <td className="r">{fmt(r.result.metrics.win_rate_pct, 1)}</td>
                         <td className="r">{fmt(r.result.metrics.profit_factor)}</td>
                         <td className="r">{fmt(r.result.metrics.sharpe_annualized)}</td>
                       </tr>
