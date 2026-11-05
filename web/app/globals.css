@@ -144,3 +144,20 @@ textarea:focus { border-color: var(--accent); }
 .check .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
 .check b { font: 500 14px var(--mono); }
 .check .sub { font-size: 12px; color: var(--muted); }
+
+.tabs { grid-template-columns: 1fr 1fr 1fr; }
+.funnel { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; margin: 4px 0 12px; }
+@media (max-width: 600px) { .funnel { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.step { background: var(--panel-2); border-radius: 8px; padding: 10px; display: grid; gap: 2px; text-align: center; }
+.step b { font: 500 20px var(--mono); }
+.step span { font-size: 11px; color: var(--muted); }
+.step.strong { box-shadow: inset 0 0 0 1px rgba(47,191,143,0.5); }
+.step.strong b { color: var(--pos); }
+.segments { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 8px; }
+.segment { background: var(--panel-2); border-radius: 8px; padding: 10px 12px; display: grid; gap: 2px; }
+.segment .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.segment b { font: 500 13px var(--mono); }
+.segment .sub { font-size: 12px; color: var(--muted); }
+td.bold { font-weight: 600; }
+td.muted { color: var(--muted); }
+.segments + .hint { margin-top: 10px; }

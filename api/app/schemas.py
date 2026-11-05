@@ -19,7 +19,7 @@ class MarketRequest(BaseModel):
     symbol: str = Field(default="BTC/USDT", min_length=3, max_length=30)
     timeframe: str = Field(default="1h", min_length=2, max_length=5)
     data_source: Literal["demo", "binance"] = "demo"
-    bars: int = Field(default=1000, ge=100, le=5000)
+    bars: int = Field(default=1000, ge=100, le=20_000)
     initial_capital: float = Field(default=10_000, gt=0)
     fee_bps: float = Field(default=5, ge=0, le=500)
     slippage_bps: float = Field(default=2, ge=0, le=500)
@@ -62,3 +62,9 @@ class SpecRequest(BaseModel):
 class AIStrategyRequest(BaseModel):
     text: str = Field(min_length=3, max_length=3000)
     access_code: str | None = Field(default=None, max_length=200)
+
+
+class DiscoverRequest(MarketRequest):
+    bars: int = Field(default=10_000, ge=2000, le=20_000)
+    n_candidates: int = Field(default=150, ge=20, le=300)
+    seed: int = Field(default=42, ge=0, le=1_000_000)

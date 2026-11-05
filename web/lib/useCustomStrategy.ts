@@ -95,8 +95,22 @@ export function useCustomStrategy() {
     }
   };
 
+  const loadSpec = async (raw: StrategyJSON, note?: string) => {
+    setError(null);
+    setUnsupported([]);
+    setExplanation(note ?? "");
+    try {
+      const out = await validateSpec(raw);
+      apply(out.spec, out.rules);
+      return out.spec;
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      return null;
+    }
+  };
+
   return {
-    text, setText: updateText, spec, rules, explanation, unsupported, json, setJson, busy, error,
+    loadSpec, text, setText: updateText, spec, rules, explanation, unsupported, json, setJson, busy, error,
     status, accessCode, setAccessCode, saved, translate, validateJson, saveCurrent, remove, open,
   };
 }
