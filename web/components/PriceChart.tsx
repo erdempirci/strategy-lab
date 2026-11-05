@@ -10,10 +10,18 @@ import {
   type Time,
   type UTCTimestamp,
 } from "lightweight-charts";
-import type { Candle, Trade } from "@/lib/types";
-import { COLORS, baseOptions, toSeconds } from "./charts";
+import type { Candle, OverlayLine, Trade } from "@/lib/types";
+import { COLORS, OVERLAY_PALETTE, baseOptions, toSeconds } from "./charts";
 
-export default function PriceChart({ candles, trades }: { candles: Candle[]; trades: Trade[] }) {
+export default function PriceChart({
+  candles,
+  overlays,
+  trades,
+}: {
+  candles: Candle[];
+  overlays: OverlayLine[];
+  trades: Trade[];
+}) {
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -27,16 +35,14 @@ export default function PriceChart({ candles, trades }: { candles: Candle[]; tra
       time: c.time as UTCTimestamp, open: c.open, high: c.high, low: c.low, close: c.close,
     })));
 
-    const line = (key: "ema_fast" | "ema_slow", color: string) => {
+    overlays.forEach((ov, i) => {
       const s = chart.addSeries(LineSeries, {
-        color, lineWidth: 2, priceLineVisible: false, lastValueVisible: false,
+        color: ov.color || OVERLAY_PALETTE[i % OVERLAY_PALETTE.length],
+        lineWidth: 2, priceLineVisible: false, lastValueVisible: false,
         crosshairMarkerVisible: false,
       });
-      s.setData(candles.filter((c) => c[key] !== null)
-        .map((c) => ({ time: c.time as UTCTimestamp, value: c[key] as number })));
-    };
-    line("ema_fast", COLORS.fast);
-    line("ema_slow", COLORS.slow);
+      s.setData(ov.data.map((p) => ({ time: p.time as UTCTimestamp, value: p.value })));
+    });
 
     const markers: SeriesMarker<Time>[] = [];
     for (const t of trades) {
@@ -50,7 +56,7 @@ export default function PriceChart({ candles, trades }: { candles: Candle[]; tra
     createSeriesMarkers(price, markers);
     chart.timeScale().fitContent();
     return () => chart.remove();
-  }, [candles, trades]);
+  }, [candles, overlays, trades]);
 
   return <div ref={ref} className="chart" />;
 }

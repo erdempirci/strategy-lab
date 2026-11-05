@@ -26,4 +26,6 @@ export const baseOptions = (height: number): DeepPartial<ChartOptions> => ({
   crosshair: { mode: 0 },
 });
 
+export const OVERLAY_PALETTE = ["#f2b84b", "#6aa8ff", "#c084fc", "#94a3b8"];
+
 export const toSeconds = (iso: string) => Math.floor(new Date(iso).getTime() / 1000);
