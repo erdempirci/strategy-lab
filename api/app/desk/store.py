@@ -162,10 +162,13 @@ class SupabaseStore:
     persistent = True
 
     def __init__(self, url: str, key: str, client: httpx.Client | None = None):
-        self.client = client or httpx.Client(
-            base_url=url.rstrip("/") + "/rest/v1", timeout=15.0,
-            headers={"apikey": key, "Authorization": f"Bearer {key}",
-                     "Content-Type": "application/json"})
+        # New-style keys (sb_secret_...) are not JWTs: send them only as `apikey`.
+        # Legacy service_role keys are JWTs and also go in Authorization.
+        headers = {"apikey": key, "Content-Type": "application/json"}
+        if not key.startswith("sb_"):
+            headers["Authorization"] = f"Bearer {key}"
+        self.client = client or httpx.Client(base_url=url.rstrip("/") + "/rest/v1",
+                                             timeout=15.0, headers=headers)
 
     def _req(self, method: str, table: str, params: dict | None = None, json=None,
              prefer: str | None = None) -> list:

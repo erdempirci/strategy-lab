@@ -23,7 +23,7 @@ Environment variables (all optional):
 | `AI_ACCESS_CODE` | if set, the AI builder asks for this code (protects your API credits) |
 | `ANTHROPIC_MODEL` | default `claude-sonnet-5-5` |
 | `BINANCE_BASE_URL` | default `https://data-api.binance.vision` |
-| `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | Masa journal storage (server side only) |
+| `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | Masa journal storage (server side only); a secret key `sb_secret_…` or a legacy `service_role` key |
 | `DESK_ACCESS_CODE` | required to change the desk (add strategies, settings, run now) |
 | `CRON_SECRET` | lets the hourly GitHub Action run the desk |
 
