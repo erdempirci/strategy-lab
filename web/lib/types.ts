@@ -101,6 +101,33 @@ export interface BacktestResult {
   equity_curve: { timestamp: string; equity: number; drawdown_pct: number }[];
   candles: Candle[];
   overlays: OverlayLine[];
+  rules?: RulesText;
+  spec?: StrategyJSON;
+}
+
+export type StrategyJSON = Record<string, unknown>;
+
+export interface RulesText {
+  indicators: string[];
+  entry: string[];
+  exit: string[];
+  risk: string[];
+}
+
+export interface AIStrategy {
+  spec: StrategyJSON;
+  explanation: string;
+  unsupported: string[];
+  rules: RulesText;
+  model: string;
+}
+
+export interface SavedStrategy {
+  id: string;
+  name: string;
+  text: string;
+  spec: StrategyJSON;
+  savedAt: string;
 }
 
 export type CompareMetrics = Pick<

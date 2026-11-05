@@ -15,7 +15,14 @@ strategy-lab/
 
 ## Deploy (Vercel, one project)
 Import the repo → Root Directory `./` → Application Preset **Services** → Deploy.
-No environment variables required (optional: `BINANCE_BASE_URL`).
+Environment variables (all optional):
+
+| Variable | Purpose |
+|----------|---------|
+| `ANTHROPIC_API_KEY` | enables the AI strategy builder ("Kendi stratejim") |
+| `AI_ACCESS_CODE` | if set, the AI builder asks for this code (protects your API credits) |
+| `ANTHROPIC_MODEL` | default `claude-sonnet-5-5` |
+| `BINANCE_BASE_URL` | default `https://data-api.binance.vision` |
 
 - `/` dashboard
 - `/api/health` · `/api/docs` (Swagger) · `GET /api/strategies` · `POST /api/backtests` ·
@@ -52,6 +59,30 @@ stop-loss / take-profit and come with the SL/TP engine.
 
 `POST /api/compare` runs all strategies with default parameters on the same data.
 
+## Custom strategies + AI builder (`api/app/strategies/dsl.py`, `api/app/ai/`)
+Users describe a strategy in plain Turkish; Claude translates it into a declarative JSON
+DSL which is validated before anything runs — **no generated code is ever executed**.
+
+```json
+{
+  "name": "EMA200 + RSI",
+  "indicators": [{"id": "ema200", "type": "ema", "period": 200},
+                 {"id": "rsi14", "type": "rsi", "period": 14}],
+  "entry": {"all": [{"left": "close", "op": ">", "right": "ema200"},
+                    {"left": "rsi14", "op": "crosses_above", "right": "30"}]},
+  "exit":  {"any": [{"left": "rsi14", "op": ">=", "right": "70"}]},
+  "stop_loss_pct": 2, "take_profit_pct": 6, "max_bars_in_trade": 48
+}
+```
+- Indicators: `sma ema rsi roc highest lowest atr macd(.line/.signal/.hist) bb(.upper/.middle/.lower)`
+- Operands: `open high low close volume hour weekday`, indicator ids, numbers, look-back `close[1]`
+- Operators: `> < >= <= crosses_above crosses_below`; `all` = AND, `any` = OR
+- Stops/targets are close-based vs. the actual fill price.
+- Anything the DSL cannot express is returned as `unsupported` and shown to the user.
+
+Endpoints: `GET /api/ai/status`, `POST /api/ai/strategy`, `POST /api/custom/validate`,
+`POST /api/custom/backtest`.
+
 ## Backtest engine
 Trade-based, long/flat (`api/app/services/backtester.py`):
 - Signal at bar close → fill at **next bar open** (no look-ahead).
@@ -76,7 +107,7 @@ market calendars.
 2. ✅ Dashboard
 3. ✅ Strategy library (8 strategies) + side-by-side comparison
 4. Stop-loss / take-profit engine → Fibonacci 0.618, FVG + market structure
-5. AI strategy builder → validated JSON DSL
+5. ✅ AI strategy builder → validated JSON DSL ("Kendi stratejim")
 6. Optimisation (grid search, multi-symbol / multi-timeframe)
 7. Validation: out-of-sample, walk-forward, Monte Carlo, overfitting checks
 8. Funded / prop-firm risk simulator
