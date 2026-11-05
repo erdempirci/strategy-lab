@@ -59,6 +59,7 @@ def run_risk_backtest(
     slippage_bps: float = 2,
     stop_pct_override: float | None = None,
     take_profit_pct_override: float | None = None,
+    return_daily: bool = False,
 ) -> dict:
     if initial_capital <= 0:
         raise ValueError("initial_capital must be positive")
@@ -220,4 +221,6 @@ def run_risk_backtest(
         "skipped_entries_no_stop": skipped_no_stop,
         "trading_days": len(daily),
     }
+    if return_daily:
+        result["daily_returns"] = day_ret
     return result

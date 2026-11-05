@@ -9,11 +9,13 @@ from pydantic import ValidationError
 from app.ai.translator import AIError, translate
 from app.data_adapters.binance import BinanceDataError, fetch_binance_ohlcv
 from app.data_adapters.normalize import quality_report
+from app.discovery.engine import run_discovery
 from app.schemas import (
     AIStrategyRequest,
     BacktestRequest,
     CompareRequest,
     CustomBacktestRequest,
+    DiscoverRequest,
     SpecRequest,
 )
 from app.services.backtester import run_backtest
@@ -22,7 +24,7 @@ from app.services.risk_engine import RiskConfig, run_risk_backtest
 from app.strategies import STRATEGIES, build_signal
 from app.strategies.dsl import StrategySpec, custom_signal, describe, overlay_lines
 
-ENGINE_VERSION = "0.5.0"
+ENGINE_VERSION = "0.6.0"
 
 app = FastAPI(
     title="Strategy Lab API",
@@ -298,6 +300,26 @@ def backtest_custom(request: CustomBacktestRequest) -> dict:
                         else "close-based, vs. actual fill price"},
         **result,
     }
+
+
+@router.post("/discover")
+def discover(request: DiscoverRequest) -> dict:
+    """Search for strategies that pass train → validation → untouched holdout."""
+    from app.schemas import RiskSettings
+
+    frame, source = _load_frame(request.data_source, request.symbol, request.timeframe,
+                                request.bars)
+    risk = request.risk or RiskSettings()
+    try:
+        out = run_discovery(frame, request.timeframe, RiskConfig(**risk.model_dump()),
+                            request.initial_capital, request.fee_bps, request.slippage_bps,
+                            n_candidates=request.n_candidates, seed=request.seed)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"symbol": request.symbol, "timeframe": request.timeframe, "data_source": source,
+            "synthetic_data": source == "deterministic_demo",
+            "data_quality": quality_report(frame, request.timeframe),
+            "risk": risk.model_dump(), "engine_version": ENGINE_VERSION, **out}
 
 
 def _access_code() -> str | None:
