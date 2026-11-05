@@ -1,17 +1,27 @@
+import hmac
 import os
 
 import pandas as pd
 from fastapi import APIRouter, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import ValidationError
 
+from app.ai.translator import AIError, translate
 from app.data_adapters.binance import BinanceDataError, fetch_binance_ohlcv
 from app.data_adapters.normalize import quality_report
-from app.schemas import BacktestRequest, CompareRequest
+from app.schemas import (
+    AIStrategyRequest,
+    BacktestRequest,
+    CompareRequest,
+    CustomBacktestRequest,
+    SpecRequest,
+)
 from app.services.backtester import run_backtest
 from app.services.market_data import demo_ohlcv
 from app.strategies import STRATEGIES, build_signal
+from app.strategies.dsl import StrategySpec, custom_signal, describe, overlay_lines
 
-ENGINE_VERSION = "0.3.0"
+ENGINE_VERSION = "0.4.0"
 
 app = FastAPI(
     title="Strategy Lab API",
@@ -58,9 +68,13 @@ def _candles(frame) -> list[dict]:
 
 
 def _overlays(spec, frame, params) -> list[dict]:
+    return _overlay_json(spec.overlays(frame, **params), frame)
+
+
+def _overlay_json(overlays, frame) -> list[dict]:
     times = [int(t.timestamp()) for t in frame["timestamp"]]
     out = []
-    for ov in spec.overlays(frame, **params):
+    for ov in overlays:
         values = ov.values.reset_index(drop=True)
         points = [{"time": t, "value": round(float(v), 8)}
                   for t, v in zip(times, values, strict=True) if pd.notna(v)]
@@ -202,6 +216,83 @@ def compare_strategies(request: CompareRequest) -> dict:
         "note": "Default parameters, in-sample only. Not validated out-of-sample.",
         "results": rows,
     }
+
+
+def _spec_or_400(raw: dict) -> StrategySpec:
+    try:
+        return StrategySpec.model_validate(raw)
+    except ValidationError as exc:
+        problems = []
+        for err in exc.errors(include_url=False)[:6]:
+            where = ".".join(str(p) for p in err["loc"])
+            problems.append(f"{where}: {err['msg'].replace('Value error, ', '')}" if where
+                            else err["msg"].replace("Value error, ", ""))
+        raise HTTPException(status_code=400, detail="; ".join(problems)) from exc
+
+
+@router.post("/custom/validate")
+def validate_custom(request: SpecRequest) -> dict:
+    spec = _spec_or_400(request.spec)
+    return {"spec": spec.model_dump(exclude_none=True), "rules": describe(spec),
+            "warmup_bars": spec.warmup()}
+
+
+@router.post("/custom/backtest")
+def backtest_custom(request: CustomBacktestRequest) -> dict:
+    spec = _spec_or_400(request.spec)
+    frame, source = _load_frame(request.data_source, request.symbol, request.timeframe,
+                                request.bars)
+    needed = max(100, 3 * spec.warmup())
+    if len(frame) < needed:
+        raise HTTPException(status_code=400, detail=f"Bu strateji en az {needed} bar istiyor")
+    try:
+        result = run_backtest(frame, custom_signal(spec, frame), request.timeframe,
+                              request.initial_capital, request.fee_bps, request.slippage_bps)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not request.include_trades:
+        result.pop("trades")
+    if request.include_candles:
+        result["candles"] = _candles(frame)
+        result["overlays"] = _overlay_json(overlay_lines(spec, frame), frame)
+    return {
+        "symbol": request.symbol,
+        "timeframe": request.timeframe,
+        "strategy": "custom",
+        "strategy_name": spec.name,
+        "parameters": {},
+        "spec": spec.model_dump(exclude_none=True),
+        "rules": describe(spec),
+        "data_source": source,
+        "synthetic_data": source == "deterministic_demo",
+        "data_quality": quality_report(frame, request.timeframe),
+        "engine_version": ENGINE_VERSION,
+        "assumptions": {**ASSUMPTIONS, "stops": "close-based, vs. actual fill price"},
+        **result,
+    }
+
+
+def _access_code() -> str | None:
+    return os.getenv("AI_ACCESS_CODE") or None
+
+
+@router.get("/ai/status")
+def ai_status() -> dict:
+    return {"enabled": bool(os.getenv("ANTHROPIC_API_KEY")),
+            "access_code_required": _access_code() is not None}
+
+
+@router.post("/ai/strategy")
+def ai_strategy(request: AIStrategyRequest) -> dict:
+    code = _access_code()
+    if code and not hmac.compare_digest(code, request.access_code or ""):
+        raise HTTPException(status_code=401, detail="Erişim kodu hatalı")
+    try:
+        out = translate(request.text)
+    except AIError as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+    spec = StrategySpec.model_validate(out["spec"])
+    return {**out, "rules": describe(spec)}
 
 
 app.include_router(router, prefix="/api")

@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -34,3 +34,18 @@ class BacktestRequest(MarketRequest):
 
 class CompareRequest(MarketRequest):
     strategies: list[str] | None = None
+
+
+class CustomBacktestRequest(MarketRequest):
+    spec: dict[str, Any]
+    include_trades: bool = True
+    include_candles: bool = False
+
+
+class SpecRequest(BaseModel):
+    spec: dict[str, Any]
+
+
+class AIStrategyRequest(BaseModel):
+    text: str = Field(min_length=3, max_length=3000)
+    access_code: str | None = Field(default=None, max_length=200)
