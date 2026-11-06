@@ -7,9 +7,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
 
 from app.ai.translator import AIError, translate
-from app.data_adapters.binance import BinanceDataError, fetch_binance_ohlcv
+from app.data_adapters.binance import BinanceDataError
+from app.data_adapters.markets import MARKETS, load_ohlcv, market_of
 from app.data_adapters.normalize import quality_report
+from app.data_adapters.yahoo import YahooDataError
 from app.desk.api import router as desk_router
+from app.discovery.candidates import FAMILY_LABELS
 from app.discovery.engine import run_discovery
 from app.schemas import (
     AIStrategyRequest,
@@ -20,7 +23,6 @@ from app.schemas import (
     SpecRequest,
 )
 from app.services.backtester import run_backtest
-from app.services.market_data import demo_ohlcv
 from app.services.risk_engine import RiskConfig, run_risk_backtest
 from app.strategies import STRATEGIES, build_signal
 from app.strategies.dsl import StrategySpec, custom_signal, describe, overlay_lines
@@ -50,13 +52,9 @@ app.add_middleware(CORSMiddleware, allow_origins=[o for o in _origins if o],
 
 def _load_frame(source: str, symbol: str, timeframe: str, bars: int):
     try:
-        if source == "binance":
-            frame, label = fetch_binance_ohlcv(symbol, timeframe, bars), "binance_spot"
-        else:
-            frame = demo_ohlcv(symbol=symbol, timeframe=timeframe, bars=bars)
-            label = "deterministic_demo"
+        frame, label = load_ohlcv(source, symbol, timeframe, bars)
         return frame.sort_values("timestamp").reset_index(drop=True), label
-    except BinanceDataError as exc:
+    except (BinanceDataError, YahooDataError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -157,6 +155,19 @@ def get_demo_data(symbol: str = "BTC/USDT", timeframe: str = "1h", bars: int = 5
             "data": frame.tail(10).to_dict(orient="records")}
 
 
+def _expected_gap(symbol: str):
+    m = market_of(symbol)
+    return m.expected_gap if m else None
+
+
+@router.get("/markets")
+def markets() -> dict:
+    return {"markets": [{"symbol": m.symbol, "label": m.label, "fee_bps": m.fee_bps,
+                         "slippage_bps": m.slippage_bps, "timeframes": ["1h", "2h", "4h", "1d"]}
+                        for m in MARKETS.values()],
+            "families": [{"id": k, "label": v} for k, v in FAMILY_LABELS.items()]}
+
+
 @router.get("/market-data/binance")
 def get_binance_data(symbol: str = "BTC/USDT", timeframe: str = "1h", bars: int = 500) -> dict:
     if bars < 1 or bars > 5000:
@@ -197,7 +208,7 @@ def create_backtest(request: BacktestRequest) -> dict:
         "parameters": params,
         "data_source": source,
         "synthetic_data": source == "deterministic_demo",
-        "data_quality": quality_report(frame, request.timeframe),
+        "data_quality": quality_report(frame, request.timeframe, _expected_gap(request.symbol)),
         "engine_version": ENGINE_VERSION,
         "assumptions": {**ASSUMPTIONS, **_risk_assumptions(request)},
         **result,
@@ -237,7 +248,7 @@ def compare_strategies(request: CompareRequest) -> dict:
         "timeframe": request.timeframe,
         "data_source": source,
         "synthetic_data": source == "deterministic_demo",
-        "data_quality": quality_report(frame, request.timeframe),
+        "data_quality": quality_report(frame, request.timeframe, _expected_gap(request.symbol)),
         "engine_version": ENGINE_VERSION,
         "note": "Default parameters, in-sample only. Not validated out-of-sample.",
         "results": rows,
@@ -294,7 +305,7 @@ def backtest_custom(request: CustomBacktestRequest) -> dict:
         "rules": describe(spec),
         "data_source": source,
         "synthetic_data": source == "deterministic_demo",
-        "data_quality": quality_report(frame, request.timeframe),
+        "data_quality": quality_report(frame, request.timeframe, _expected_gap(request.symbol)),
         "engine_version": ENGINE_VERSION,
         "assumptions": {**ASSUMPTIONS, **_risk_assumptions(request),
                         "stops": "intrabar (risk engine)" if request.risk
@@ -314,12 +325,13 @@ def discover(request: DiscoverRequest) -> dict:
     try:
         out = run_discovery(frame, request.timeframe, RiskConfig(**risk.model_dump()),
                             request.initial_capital, request.fee_bps, request.slippage_bps,
-                            n_candidates=request.n_candidates, seed=request.seed)
+                            n_candidates=request.n_candidates, seed=request.seed,
+                            families=request.families)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"symbol": request.symbol, "timeframe": request.timeframe, "data_source": source,
             "synthetic_data": source == "deterministic_demo",
-            "data_quality": quality_report(frame, request.timeframe),
+            "data_quality": quality_report(frame, request.timeframe, _expected_gap(request.symbol)),
             "risk": risk.model_dump(), "engine_version": ENGINE_VERSION, **out}
 
 

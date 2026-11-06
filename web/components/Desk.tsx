@@ -55,13 +55,13 @@ export function DeskSide({ desk }: { desk: Desk }) {
             <label>Maks. açık pozisyon<input type="number" min={1} max={20} value={s.max_open_positions} onChange={num("max_open_positions")} /></label>
             <label>Veri
               <select value={s.data_source} onChange={(e) => setS({ ...s, data_source: e.target.value as DeskSettings["data_source"] })}>
-                <option value="binance">Binance</option>
+                <option value="binance">Gerçek (kripto: Binance, US100/US500: Yahoo)</option>
                 <option value="demo">Demo (sentetik)</option>
               </select>
             </label>
           </div>
           <h2>Tarayıcı</h2>
-          <label>İzleme listesi<input value={watch} onChange={(e) => setWatch(e.target.value.toUpperCase())} /></label>
+          <label>İzleme listesi (ör. BTC/USDT, US100)<input value={watch} onChange={(e) => setWatch(e.target.value.toUpperCase())} /></label>
           <div className="row">
             <label>Hacim eşiği (×)<input type="number" min={1.1} max={20} step={0.1} value={s.volume_spike_x} onChange={num("volume_spike_x")} /></label>
             <label>Ortalama (gün)<input type="number" min={3} max={90} value={s.volume_lookback_days} onChange={num("volume_lookback_days")} /></label>

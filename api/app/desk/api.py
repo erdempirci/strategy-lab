@@ -9,13 +9,13 @@ import pandas as pd
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import ValidationError
 
-from app.data_adapters.binance import fetch_binance_ohlcv
+from app.data_adapters.markets import load_ohlcv, market_of
+from app.data_adapters.yahoo import SUPPORTED as YAHOO_TIMEFRAMES
 from app.desk.engine import run_desk, settings_of
 from app.desk.ledger import r_stats
 from app.desk.models import RunIn, SettingsIn, StrategyIn, StrategyPatch
 from app.desk.report import weekly_report
 from app.desk.store import StoreError, get_store, iso
-from app.services.market_data import demo_ohlcv
 from app.strategies.dsl import StrategySpec, describe
 
 router = APIRouter(prefix="/desk", tags=["desk"])
@@ -44,10 +44,9 @@ def _authorized_run(authorization: str | None, access_code: str | None, store) -
 
 
 def loader_for(source: str):
+    """Crypto pairs → Binance, US100/US500 → Yahoo futures; "demo" → synthetic for all."""
     def load(symbol: str, timeframe: str, bars: int) -> pd.DataFrame:
-        if source == "demo":
-            return demo_ohlcv(symbol=symbol, timeframe=timeframe, bars=bars)
-        return fetch_binance_ohlcv(symbol, timeframe, bars)
+        return load_ohlcv(source, symbol, timeframe, bars)[0]
     return load
 
 
@@ -97,6 +96,10 @@ def add_strategy(body: StrategyIn) -> dict:
     if body.verdict == "failed_holdout":
         raise HTTPException(status_code=400, detail="Görmediği veride başarısız olan strateji "
                             "masaya alınmaz.")
+    m = market_of(body.symbol)
+    if m and body.timeframe not in YAHOO_TIMEFRAMES:
+        raise HTTPException(status_code=400, detail=f"{m.symbol} için zaman dilimi "
+                            f"{', '.join(YAHOO_TIMEFRAMES)} olmalı.")
     try:
         spec = StrategySpec.model_validate(body.spec)
     except ValidationError as exc:

@@ -3,17 +3,30 @@
 import { fmt, pct, shortTime, tone } from "@/lib/format";
 import type { DiscoveryCandidate, DiscoveryResult, SegmentResult } from "@/lib/types";
 
-export function DiscoveryFields({ n, seed, onN, onSeed }: {
+export const FAMILIES: [string, string][] = [
+  ["", "Tüm aileler"], ["engulfing", "Yutan mum (engulfing)"], ["trend_pullback", "Trend + RSI dönüşü"],
+  ["ema_cross", "EMA kesişimi"], ["donchian", "Donchian kırılımı"], ["bb_reversion", "Bollinger dönüşü"],
+  ["bb_breakout", "Bollinger kırılımı"], ["macd", "MACD momentum"], ["rsi_momentum", "RSI momentum"],
+  ["roc", "ROC momentum"],
+];
+
+export function DiscoveryFields({ n, seed, onN, onSeed, family, onFamily }: {
   n: number; seed: number; onN: (v: number) => void; onSeed: (v: number) => void;
+  family: string; onFamily: (v: string) => void;
 }) {
   return (
     <>
+      <label>Strateji ailesi
+        <select value={family} onChange={(e) => onFamily(e.target.value)}>
+          {FAMILIES.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+        </select>
+      </label>
       <p className="hint">Sistem yüzlerce strateji dener; veriyi zamana göre üçe böler: %60 eğitim, %20 doğrulama, %20 hiç dokunulmamış son dönem. Sadece üçünde de risk kurallarına uyarak kazanan ve şans testini geçenler &quot;sağlam&quot; sayılır.</p>
       <div className="row">
         <label>Aday sayısı<input type="number" min={20} max={300} step={10} value={n} onChange={(e) => onN(Number(e.target.value))} /></label>
         <label>Seed<input type="number" min={0} value={seed} onChange={(e) => onSeed(Number(e.target.value))} /></label>
       </div>
-      <p className="hint">Daha uzun geçmiş = daha güvenilir sonuç. 1h için 10.000–20.000 bar öner (≈ 14–28 ay). Aynı seed aynı adayları üretir.</p>
+      <p className="hint">Daha uzun geçmiş = daha güvenilir sonuç. 1h için 10.000–20.000 bar öner (≈ 14–28 ay; US100&apos;de Yahoo en fazla ~2 yıl, ≈ 11.000 saatlik bar verir). Aynı seed aynı adayları üretir.</p>
     </>
   );
 }

@@ -32,7 +32,7 @@ def discover(frame, **kw):
 def test_candidates_reproducible_and_valid():
     a, b = generate(80, seed=5), generate(80, seed=5)
     assert [c.spec.model_dump() for c in a] == [c.spec.model_dump() for c in b]
-    assert len({c.family for c in a}) == 8
+    assert len({c.family for c in a}) == 9
     assert generate(80, seed=6)[0].spec.model_dump() != a[0].spec.model_dump()
     assert all(c.spec.exit.all or c.spec.max_bars_in_trade for c in a)
 

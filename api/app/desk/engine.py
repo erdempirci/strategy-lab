@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
+from app.data_adapters.markets import market_of
 from app.data_adapters.normalize import quality_report
 from app.desk.ledger import build_ledger, r_stats
 from app.desk.models import DeskSettings
@@ -34,6 +35,31 @@ FORWARD_MIN_TRADES = 10
 
 def settings_of(store: DeskStore) -> DeskSettings:
     return DeskSettings(**(store.get_setting("settings") or {}))
+
+
+def costs_for(symbol: str, settings: DeskSettings) -> tuple[float, float]:
+    """Index futures are far cheaper to trade than crypto spot: use the market's costs."""
+    m = market_of(symbol)
+    return (m.fee_bps, m.slippage_bps) if m else (settings.fee_bps, settings.slippage_bps)
+
+
+def volume_ratio(frame: pd.DataFrame, i: int, days: int, timeframe: str) -> float | None:
+    """Bar i's volume vs. its average. Session markets compare with the same UTC hour
+    (the US open always trades more than the Asian night, that is not a spike)."""
+    vol = frame["volume"].to_numpy(float)
+    ts = frame["timestamp"]
+    since = ts.iloc[i] - pd.Timedelta(days=days)
+    window = (ts >= since).to_numpy() & (np.arange(len(frame)) < i)
+    if market_of_frame(frame) and timeframe_minutes(timeframe) < 1440:
+        window &= (ts.dt.hour == ts.iloc[i].hour).to_numpy()
+    base = vol[window]
+    if len(base) < 3 or base.mean() <= 0:
+        return None
+    return float(vol[i] / base.mean())
+
+
+def market_of_frame(frame: pd.DataFrame):
+    return frame.attrs.get("market")
 
 
 def closed_bars(frame: pd.DataFrame, timeframe: str, now: pd.Timestamp) -> pd.DataFrame:
@@ -117,9 +143,10 @@ def evaluate(strategy: dict, frame: pd.DataFrame, settings: DeskSettings,
                       max_total_loss_pct=None, stop_type="atr", stop_atr_period=ATR_PERIOD,
                       stop_atr_mult=float(strategy["stop_atr_mult"]),
                       take_profit_rr=strategy.get("take_profit_rr"))
+    fee, slip = costs_for(strategy["symbol"], settings)
     for kind, keep in (("desk", approved), ("shadow", set(ev.transitions))):
         res = run_risk_backtest(frame, pd.Series(_keep_runs(sig, keep)), risk, tf,
-                                settings.initial_capital, settings.fee_bps, settings.slippage_bps)
+                                settings.initial_capital, fee, slip)
         rows = _trade_rows(strategy["id"], kind, res["trades"], frame)
         setattr(ev, kind, rows)
     return ev
@@ -129,12 +156,10 @@ def evaluate(strategy: dict, frame: pd.DataFrame, settings: DeskSettings,
 
 def scanner_note(ev: StrategyEval, i: int, settings: DeskSettings) -> tuple[str, float | None]:
     f, s = ev.frame, ev.strategy
-    n = bars_for(settings.volume_lookback_days, s["timeframe"])
-    vol = f["volume"].to_numpy(float)
-    base = vol[max(0, i - n):i]
-    ratio = float(vol[i] / base.mean()) if len(base) and base.mean() > 0 else None
+    ratio = volume_ratio(f, i, settings.volume_lookback_days, s["timeframe"])
     chg = (f["close"].iloc[i] / f["open"].iloc[i] - 1) * 100
-    vtxt = f"hacim {settings.volume_lookback_days} günlük ortalamanın {ratio:.1f} katı" \
+    what = "aynı saatin " if market_of_frame(f) else ""
+    vtxt = f"hacim {what}{settings.volume_lookback_days} günlük ortalamasının {ratio:.1f} katı" \
         if ratio is not None else "hacim ortalaması hesaplanamadı"
     return (f"{s['symbol']} {s['timeframe']}: \"{s['name']}\" giriş sinyali verdi "
             f"(bar {pd.Timestamp(f['timestamp'].iloc[i]).strftime('%d.%m %H:%M')} UTC). "
@@ -225,7 +250,9 @@ def skeptic(ev: StrategyEval, i: int, atr: np.ndarray, book: Book, risk: dict,
     if s["symbol"] in book.open_symbols:
         waits.append(f"{s['symbol']} için başka bir stratejinin açık pozisyonu var; aynı riski "
                      "ikiye katlamayalım.")
-    q = quality_report(f.iloc[max(0, i - 200):i + 1], s["timeframe"])
+    m = market_of(s["symbol"])
+    q = quality_report(f.iloc[max(0, i - 200):i + 1], s["timeframe"],
+                       m.expected_gap if m else None)
     if q["gaps"]:
         waits.append(f"Son 200 barda {q['missing_bars_estimate']} eksik bar var; veri güvenilir değil.")
     if proven:
@@ -243,7 +270,11 @@ def skeptic(ev: StrategyEval, i: int, atr: np.ndarray, book: Book, risk: dict,
 # ---------------------------------------------------------------- run
 
 def _load(load: Loader, symbol: str, timeframe: str, bars: int, now) -> pd.DataFrame:
-    return closed_bars(load(symbol, timeframe, bars), timeframe, now)
+    """Closed bars only. Delayed feeds (Yahoo futures) need DELAY after the bar end."""
+    m = market_of(symbol)
+    frame = closed_bars(load(symbol, timeframe, bars), timeframe, now - (m.delay if m else pd.Timedelta(0)))
+    frame.attrs["market"] = m.symbol if m else None
+    return frame
 
 
 def window_bars(strategy: dict, settings: DeskSettings, now: pd.Timestamp) -> int:
@@ -372,9 +403,7 @@ def scan_watchlist(store: DeskStore, load: Loader, settings: DeskSettings, now, 
             f = _load(load, sym, tf, n + 2, now)
             if len(f) < n // 2:
                 continue
-            vol = f["volume"].to_numpy(float)
-            base = vol[-n - 1:-1].mean()
-            ratio = float(vol[-1] / base) if base > 0 else 0.0
+            ratio = volume_ratio(f, len(f) - 1, settings.volume_lookback_days, tf) or 0.0
         except Exception as exc:  # noqa: BLE001 — a scan failure is reported, not fatal
             errors.append({"symbol": sym, "error": str(exc)[:300]})
             continue
@@ -383,8 +412,10 @@ def scan_watchlist(store: DeskStore, load: Loader, settings: DeskSettings, now, 
             chg = float(f["close"].iloc[-1] / f["open"].iloc[-1] - 1) * 100
             row = {"symbol": sym, "timeframe": tf, "bar_time": bar, "volume_ratio": round(ratio, 2),
                    "change_pct": round(chg, 3),
-                   "text": f"Tarayıcı: {sym} {tf} hacmi {settings.volume_lookback_days} günlük "
-                           f"ortalamanın {ratio:.1f} katı, bar {chg:+.2f}%."}
+                   "text": f"Tarayıcı: {sym} {tf} hacmi "
+                           f"{'aynı saatin ' if market_of_frame(f) else ''}"
+                           f"{settings.volume_lookback_days} günlük ortalamasının {ratio:.1f} katı, "
+                           f"bar {chg:+.2f}%."}
             if store.add_event({"kind": "volume_spike", "dedupe_key": f"vs:{sym}:{tf}:{bar}",
                                 "payload": row}):
                 found.append(row)

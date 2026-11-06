@@ -1,4 +1,4 @@
-export type DataSource = "demo" | "binance";
+export type DataSource = "demo" | "binance" | "yahoo";
 
 export interface RiskSettings {
   risk_per_trade_pct: number;

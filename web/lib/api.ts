@@ -47,9 +47,10 @@ export const runCustom = (market: MarketParams, spec: StrategyJSON) =>
     method: "POST", body: JSON.stringify({ ...market, spec, include_candles: true }),
   });
 
-export const discover = (market: MarketParams, n_candidates: number, seed: number) =>
+export const discover = (market: MarketParams, n_candidates: number, seed: number,
+                         families?: string[]) =>
   call<DiscoveryResult>("/discover", {
-    method: "POST", body: JSON.stringify({ ...market, n_candidates, seed }),
+    method: "POST", body: JSON.stringify({ ...market, n_candidates, seed, families }),
   });
 
 // ---------------------------------------------------------------- Masa (desk)

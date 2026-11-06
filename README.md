@@ -120,6 +120,19 @@ profitable, luck not ruled out) · **failed holdout**.
 Calibration (tests): 0 robust picks on random-walk markets across seeds; finds a planted
 momentum edge. On real markets "nothing robust found" is a normal, useful outcome.
 
+## US index futures (`api/app/data_adapters/yahoo.py`, `markets.py`)
+- `US100` → `NQ=F` (Nasdaq 100 futures), `US500` → `ES=F`, from Yahoo's public chart API
+  (no key). Aliases: NAS100, NQ, NDX, USTEC / SPX500, ES, SPX.
+- 1h (≈ 2 years max), 2h/4h (resampled from 60m, UTC-aligned) and 1d.
+- Quotes are ~10 min delayed: a bar only counts as closed 15 min after its end, so the
+  hourly desk run is at :17.
+- Session market: weekend and daily-break gaps (< 80 h) are not reported as data gaps;
+  the Tarayıcı compares volume with the same UTC hour's average.
+- Default costs 0.5 + 0.5 bps (NQ commission + 1 tick ≈ 0.2 bps). The continuous contract
+  jumps at quarterly rolls. Long only, like the rest of the engine.
+- Keşfet can be limited to one strategy family, e.g. `families: ["engulfing"]`
+  (bullish engulfing with trend / low-sweep / RSI-pullback context, bearish engulfing exit).
+
 ## Masa — trading desk (`api/app/desk/`)
 Forward-tests discovered strategies on a **paper** account, hourly. Rule-based roles, no LLM,
 no orders:
@@ -144,7 +157,7 @@ no orders:
 
 Setup: create a Supabase project → run `supabase/migrations/001_desk.sql` in the SQL editor →
 set `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `DESK_ACCESS_CODE`, `CRON_SECRET` on Vercel →
-add repo secrets `DESK_URL` and `CRON_SECRET` for `.github/workflows/desk.yml` (hourly at :02;
+add repo secrets `DESK_URL` and `CRON_SECRET` for `.github/workflows/desk.yml` (hourly at :17;
 Vercel Hobby crons are daily-only). GitHub pauses scheduled workflows after 60 days without
 repo activity; re-enable from the Actions tab.
 
@@ -177,5 +190,6 @@ market calendars.
 6. ✅ Discovery: search + train/validation/holdout + deflated Sharpe
 7. Next: walk-forward folds, Monte Carlo, multi-symbol robustness
 8. ✅ Masa: hourly paper-trading desk with rule-based roles and a journal
-9. NQ/ES futures data adapter for the desk
-10. Funded / prop-firm risk simulator
+9. ✅ US100 / US500 futures data (Yahoo) for Keşfet and the desk
+10. Short side in the engine
+11. Funded / prop-firm risk simulator

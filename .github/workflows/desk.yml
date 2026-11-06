@@ -1,12 +1,13 @@
 name: Masa (saatlik)
 
-# Runs the trading desk two minutes after every hour, right after the hourly bar closes.
+# Runs the trading desk at :17 every hour. Yahoo futures quotes are delayed ~10 min, so
+# an hourly US100 bar is only complete a quarter past; crypto bars are long closed by then.
 # Vercel Hobby only allows daily crons, so the hourly trigger lives here.
 # Repo secrets: DESK_URL (e.g. https://strategy-lab.vercel.app) and CRON_SECRET
 # (the same value as the CRON_SECRET environment variable on Vercel).
 on:
   schedule:
-    - cron: "2 * * * *"
+    - cron: "17 * * * *"
   workflow_dispatch:
 
 concurrency:
