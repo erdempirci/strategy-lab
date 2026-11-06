@@ -1,4 +1,4 @@
-export type DataSource = "demo" | "binance";
+export type DataSource = "demo" | "binance" | "yahoo";
 
 export interface RiskSettings {
   risk_per_trade_pct: number;
@@ -230,4 +230,142 @@ export interface DiscoveryResult {
   results: DiscoveryCandidate[];
   elapsed_s: number;
   seed: number;
+}
+
+// ---------------------------------------------------------------- Masa (desk)
+
+export type DeskVerdict = "AL" | "BEKLE" | "GEÇ";
+
+export interface DeskSettings {
+  initial_capital: number;
+  risk_per_trade_pct: number;
+  daily_loss_limit_pct: number;
+  max_total_loss_pct: number;
+  max_open_positions: number;
+  fee_bps: number;
+  slippage_bps: number;
+  data_source: "binance" | "demo";
+  watchlist: string[];
+  scan_timeframe: string;
+  volume_spike_x: number;
+  volume_lookback_days: number;
+  max_late_bars: number;
+}
+
+export interface RStats {
+  trades: number;
+  wins: number;
+  win_rate_pct: number | null;
+  profit_factor: number | null;
+  avg_r: number | null;
+  sum_r: number;
+}
+
+export interface DeskStrategy {
+  id: string;
+  name: string;
+  symbol: string;
+  timeframe: string;
+  verdict: "robust" | "promising";
+  active: boolean;
+  activated_at: string;
+  stop_atr_mult: number;
+  take_profit_rr: number | null;
+  discovery: { holdout?: SegmentResult; deflated_sharpe_prob?: number };
+  rules: RulesText;
+  forward: RStats;
+  desk_stats: RStats;
+}
+
+export interface DeskRole {
+  role: "Tarayıcı" | "Giriş-Çıkış" | "Risk" | "Şüpheci" | "Günlükçü";
+  text: string;
+  status?: "OK" | "RED";
+  verdict?: DeskVerdict;
+}
+
+export interface DeskDecision {
+  id: string;
+  strategy_id: string;
+  strategy_name: string;
+  symbol: string;
+  timeframe: string;
+  signal_time: string;
+  decided_at: string;
+  verdict: DeskVerdict;
+  risk_status: "OK" | "RED" | null;
+  late_bars: number;
+  roles: DeskRole[];
+  trigger: string;
+}
+
+export interface DeskPosition {
+  strategy_id: string;
+  name: string;
+  symbol: string;
+  timeframe: string;
+  status: "open" | "pending";
+  entry_time?: string;
+  signal_time?: string;
+  entry_price?: number;
+  stop_price?: number;
+  target_price?: number | null;
+  last_price: number;
+  r_multiple?: number | null;
+  pnl?: number;
+  risk_amount?: number;
+}
+
+export interface DeskSnapshot {
+  at: string;
+  trigger: string;
+  account: {
+    initial: number; realized_equity: number; open_pnl: number; equity: number;
+    day_start_equity: number; open_risk: number; day_pnl_pct: number; total_pnl_pct: number;
+    day_floor: number; total_floor: number; halted: "daily" | "total" | null;
+  };
+  positions: DeskPosition[];
+  curve: { time: string; equity: number }[];
+  errors: { name?: string; symbol?: string; error: string }[];
+}
+
+export interface DeskTrade {
+  strategy_id: string;
+  entry_time: string;
+  exit_time: string;
+  entry_price: number;
+  exit_price: number;
+  exit_reason: string;
+  r_multiple: number | null;
+  return_pct: number;
+}
+
+export interface DeskStatus {
+  storage: "memory" | "supabase";
+  persistent: boolean;
+  access_code_required: boolean;
+  access_code_set: boolean;
+  schedule_secret_set: boolean;
+}
+
+export interface DeskState {
+  status: DeskStatus;
+  settings: DeskSettings;
+  strategies: DeskStrategy[];
+  snapshot: DeskSnapshot | null;
+  decisions: DeskDecision[];
+  trades: DeskTrade[];
+  volume_spikes: { symbol: string; timeframe: string; bar_time: string; text: string }[];
+  runs: { created_at: string; trigger: string; new_decisions: number; approved: number;
+          errors: unknown[]; equity: number }[];
+}
+
+export interface DeskReport {
+  period: { start: string; end: string; days: number };
+  runs: number;
+  expected_runs: number;
+  decisions: { total: number; AL: number; BEKLE: number; "GEÇ": number; risk_red: number; missed: number };
+  desk: RStats & { pnl: number; equity: number };
+  skeptic_audit: RStats;
+  suggestions: string[];
 }

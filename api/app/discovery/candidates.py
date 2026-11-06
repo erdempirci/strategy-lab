@@ -81,20 +81,58 @@ def _roc(r):
     return (f"ROC{n} > %{x}", ind, [_c(f"roc{n}", "crosses_above", x)], [_c(f"roc{n}", "<", 0)])
 
 
+# previous bar red, this body covers it: open <= close[1] < open[1] < close (green implied)
+BULL_ENGULF = [_c("close[1]", "<", "open[1]"), _c("open", "<=", "close[1]"),
+               _c("close", ">", "open[1]")]
+BEAR_ENGULF = [_c("close[1]", ">", "open[1]"), _c("open", ">=", "close[1]"),
+               _c("close", "<", "open[1]")]
+
+
+def _engulfing(r):
+    """Bullish engulfing: a green body that swallows the previous red body, with context."""
+    ctx = r.choice(["trend", "sweep", "rsi", "plain"])
+    ind, entry, label = [], list(BULL_ENGULF), "Yutan boğa mumu"
+    if ctx == "trend":
+        t = r.choice([50, 100, 200])
+        ind.append({"id": f"ema{t}", "type": "ema", "period": t})
+        entry.append(_c("close", ">", f"ema{t}"))
+        label += f" · trend (EMA{t} üstü)"
+    elif ctx == "sweep":
+        n = r.choice([10, 20, 50])
+        ind.append({"id": f"ll{n}", "type": "lowest", "period": n, "source": "low"})
+        entry.append(_c("low", "<", f"ll{n}[1]"))
+        label += f" · {n} bar dibini süpürüp dönüş"
+    elif ctx == "rsi":
+        lvl = r.choice([35, 40, 45])
+        ind.append({"id": "rsi14", "type": "rsi", "period": 14})
+        entry.append(_c("rsi14[1]", "<", lvl))
+        label += f" · geri çekilme (RSI14 < {lvl})"
+    return label, ind, entry, list(BEAR_ENGULF)
+
+
 FAMILIES = {"trend_pullback": _trend_pullback, "ema_cross": _ema_cross, "donchian": _donchian,
             "bb_reversion": _bb_reversion, "bb_breakout": _bb_breakout, "macd": _macd,
-            "rsi_momentum": _rsi_momentum, "roc": _roc}
+            "rsi_momentum": _rsi_momentum, "roc": _roc, "engulfing": _engulfing}
+FAMILY_LABELS = {"trend_pullback": "Trend + RSI dönüşü", "ema_cross": "EMA kesişimi",
+                 "donchian": "Donchian kırılımı", "bb_reversion": "Bollinger dönüşü",
+                 "bb_breakout": "Bollinger kırılımı", "macd": "MACD momentum",
+                 "rsi_momentum": "RSI momentum", "roc": "ROC momentum",
+                 "engulfing": "Yutan mum (engulfing)"}
 
 SESSIONS = [None, None, (7, 16, "Londra"), (13, 21, "New York"), (0, 8, "Asya")]
 
 
-def generate(n: int, seed: int = 42, intraday: bool = True) -> list[Candidate]:
+def generate(n: int, seed: int = 42, intraday: bool = True,
+             families: list[str] | None = None) -> list[Candidate]:
     r = random.Random(seed)
+    pool = [f for f in FAMILIES if not families or f in families]
+    if not pool:
+        raise ValueError(f"unknown families: {families}")
     out, seen = [], set()
     attempts = 0
     while len(out) < n and attempts < n * 20:
         attempts += 1
-        family = r.choice(list(FAMILIES))
+        family = r.choice(pool)
         name, ind, entry, exit_ = FAMILIES[family](r)
         ind = [dict(i) for i in ind]
         entry = list(entry)

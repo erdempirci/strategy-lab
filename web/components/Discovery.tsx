@@ -3,24 +3,42 @@
 import { fmt, pct, shortTime, tone } from "@/lib/format";
 import type { DiscoveryCandidate, DiscoveryResult, SegmentResult } from "@/lib/types";
 
-export function DiscoveryFields({ n, seed, onN, onSeed }: {
+export const FAMILIES: [string, string][] = [
+  ["", "Tüm aileler"], ["engulfing", "Yutan mum (engulfing)"], ["trend_pullback", "Trend + RSI dönüşü"],
+  ["ema_cross", "EMA kesişimi"], ["donchian", "Donchian kırılımı"], ["bb_reversion", "Bollinger dönüşü"],
+  ["bb_breakout", "Bollinger kırılımı"], ["macd", "MACD momentum"], ["rsi_momentum", "RSI momentum"],
+  ["roc", "ROC momentum"],
+];
+
+export function DiscoveryFields({ n, seed, onN, onSeed, family, onFamily }: {
   n: number; seed: number; onN: (v: number) => void; onSeed: (v: number) => void;
+  family: string; onFamily: (v: string) => void;
 }) {
   return (
     <>
+      <label>Strateji ailesi
+        <select value={family} onChange={(e) => onFamily(e.target.value)}>
+          {FAMILIES.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+        </select>
+      </label>
       <p className="hint">Sistem yüzlerce strateji dener; veriyi zamana göre üçe böler: %60 eğitim, %20 doğrulama, %20 hiç dokunulmamış son dönem. Sadece üçünde de risk kurallarına uyarak kazanan ve şans testini geçenler &quot;sağlam&quot; sayılır.</p>
       <div className="row">
         <label>Aday sayısı<input type="number" min={20} max={300} step={10} value={n} onChange={(e) => onN(Number(e.target.value))} /></label>
         <label>Seed<input type="number" min={0} value={seed} onChange={(e) => onSeed(Number(e.target.value))} /></label>
       </div>
-      <p className="hint">Daha uzun geçmiş = daha güvenilir sonuç. 1h için 10.000–20.000 bar öner (≈ 14–28 ay). Aynı seed aynı adayları üretir.</p>
+      <p className="hint">Daha uzun geçmiş = daha güvenilir sonuç. 1h için 10.000–20.000 bar öner (≈ 14–28 ay; US100&apos;de Yahoo en fazla ~2 yıl, ≈ 11.000 saatlik bar verir). Aynı seed aynı adayları üretir.</p>
     </>
   );
 }
 
 const VERDICT_CLS: Record<string, string> = { robust: "good", promising: "warn", failed_holdout: "bad" };
 
-export function DiscoveryReport({ d, onOpen }: { d: DiscoveryResult; onOpen: (c: DiscoveryCandidate) => void }) {
+export function DiscoveryReport({ d, onOpen, onAdd, added = {}, busy }: {
+  d: DiscoveryResult; onOpen: (c: DiscoveryCandidate) => void;
+  onAdd?: (c: DiscoveryCandidate) => void; added?: Record<string, boolean>; busy?: string | null;
+}) {
+  const deskable = (c: DiscoveryCandidate) => c.verdict !== "failed_holdout" && !d.synthetic_data
+    && ["1h", "2h", "4h", "6h", "8h", "12h", "1d"].includes(d.timeframe);
   const f = d.funnel;
   const seg = d.segments;
   return (
@@ -57,7 +75,7 @@ export function DiscoveryReport({ d, onOpen }: { d: DiscoveryResult; onOpen: (c:
           <div className="panel-head"><h2>Finalistler</h2><span className="muted">dokununca kurallarıyla açılır</span></div>
           <div className="table-wrap">
             <table>
-              <thead><tr><th>Strateji</th><th>Sonuç</th><th className="r">Eğitim/ay</th><th className="r">Doğrulama/ay</th><th className="r">Son dönem/ay</th><th className="r">İşlem</th><th className="r">PF</th><th className="r">En kötü gün</th><th className="r">Şans testi</th></tr></thead>
+              <thead><tr><th>Strateji</th><th>Sonuç</th><th className="r">Eğitim/ay</th><th className="r">Doğrulama/ay</th><th className="r">Son dönem/ay</th><th className="r">İşlem</th><th className="r">PF</th><th className="r">En kötü gün</th><th className="r">Şans testi</th>{onAdd && <th>Masa</th>}</tr></thead>
               <tbody>
                 {d.results.map((c) => (
                   <tr key={c.id} className="click" onClick={() => onOpen(c)}>
@@ -70,12 +88,20 @@ export function DiscoveryReport({ d, onOpen }: { d: DiscoveryResult; onOpen: (c:
                     <td className="r">{fmt(c.holdout.profit_factor)}</td>
                     <td className="r neg">{pct(c.holdout.worst_day_pct, 2)}</td>
                     <td className={`r ${c.deflated_sharpe_prob >= d.thresholds.deflated_sharpe_min ? "pos" : "muted"}`}>%{fmt(c.deflated_sharpe_prob * 100, 0)}</td>
+                    {onAdd && (
+                      <td onClick={(e) => e.stopPropagation()}>
+                        {added[c.id] ? <span className="tag sm good">masada</span>
+                          : deskable(c) ? <button type="button" className="link" disabled={!!busy} onClick={() => onAdd(c)}>{busy === `add:${c.id}` ? "ekleniyor…" : "Masaya ekle"}</button>
+                          : <span className="muted">—</span>}
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
           <p className="hint">&quot;Son dönem&quot; seçimde hiç kullanılmadı; görmediği veride nasıl davrandığının en dürüst tahmini budur. Aylık değerler bileşik eşdeğerdir. Şans testi = Deflated Sharpe: bu kadar deneme yapılmışken gerçek Sharpe&apos;ın sıfırdan büyük olma olasılığı.</p>
+          {onAdd && <p className="hint">Masaya yalnızca gerçek veride, 1 saat ve üstü zaman diliminde, son dönemi geçen adaylar eklenebilir. Masa bunları eklendiği andan itibaren kağıt üstünde izler.</p>}
         </div>
       )}
     </>

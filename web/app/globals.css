@@ -161,3 +161,16 @@ textarea:focus { border-color: var(--accent); }
 td.bold { font-weight: 600; }
 td.muted { color: var(--muted); }
 .segments + .hint { margin-top: 10px; }
+
+.tabs { grid-template-columns: repeat(4, 1fr); }
+.ok-text { color: var(--pos); }
+.feed { display: grid; gap: 10px; }
+.decision { background: var(--panel-2); border-radius: 8px; padding: 10px 12px; }
+.decision-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+.decision-head .muted { margin: 0; font-size: 12px; }
+.decision ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.decision li { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 8px; font-size: 13px; align-items: baseline; }
+.decision .role { font: 11px var(--mono); color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+@media (max-width: 600px) { .decision li { grid-template-columns: minmax(0, 1fr); gap: 0; } }
+.suggestions { margin: 12px 0 0; padding-left: 18px; display: grid; gap: 4px; font-size: 13px; }
+button.link:disabled { opacity: 0.5; }
