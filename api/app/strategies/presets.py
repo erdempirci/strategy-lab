@@ -114,6 +114,18 @@ CLAUDE_PRESETS: list[dict] = [
     },
 ]
 
+# Same rules without the Friday close: on 4h most trades used to end at the weekend before
+# the stop or target was reached, so the 1:1.5 structure never played out. Here every trade
+# ends at its stop or its 1.5R target (or an opposite signal).
+_base = CLAUDE_PRESETS[0]
+CLAUDE_PRESETS.append({
+    "id": "gold_trend_pullback_hold", "name": "Altın Trend-Pullback 1:1.5 (Cuma kapanışsız)",
+    "note": "Altın Trend-Pullback ile aynı giriş kuralları, ama Cuma kapanışı yok: her işlem "
+            "sadece stopta ya da 1,5R hedefte kapanır, hafta sonunu taşıyabilir (gap riski). "
+            "Önerilen: XAUUSD 4h, risk kuralları açık.",
+    "spec": {k: v for k, v in _base["spec"].items() if k not in ("exit", "short_exit")},
+})
+
 
 def _strategy(p: dict, category: str = "video", suffix: str = " (QS video)",
               hint: str = " En iyi günlük (1d) grafikte.") -> Strategy:
