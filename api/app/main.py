@@ -152,7 +152,8 @@ def _execute(frame, signal, req, stop_pct=None, take_profit_pct=None, levels=Non
 def _risk_assumptions(req) -> dict:
     if req.risk is None:
         return {}
-    return {"position": "risk-based size, capped at 1x equity (spot)",
+    return {"position": "risk-based size, capped at 1x equity; shorts assume a "
+                        "short-capable account (futures / CFD / margin)",
             "stops": "intrabar; stop assumed before target in the same bar; gaps fill at open",
             "entries": "fresh 0->1 signal required (no re-entry after a stop)",
             "daily_loss_limit": "vs. UTC day start equity, incl. open P&L at bar low",
@@ -162,7 +163,7 @@ def _risk_assumptions(req) -> dict:
 ASSUMPTIONS = {
     "signal": "evaluated at bar close",
     "execution": "next_bar_open",
-    "position": "long_or_flat, 100% equity, no leverage",
+    "position": "long / short / flat, 100% equity, no leverage",
     "fees": "fee_bps of notional on entry and exit",
     "slippage": "slippage_bps adverse to fill price",
     "open_position_at_end": "closed at last close, flagged forced_exit",
@@ -344,9 +345,11 @@ def backtest_custom(request: CustomBacktestRequest) -> dict:
         if request.risk is None:
             result = _execute(frame, custom_signal(spec, frame), request)
         else:
-            result = _execute(frame, custom_signal(spec, frame, apply_stops=False), request,
+            sig = custom_signal(spec, frame, apply_stops=False)
+            result = _execute(frame, sig, request,
                               stop_pct=spec.stop_loss_pct, take_profit_pct=spec.take_profit_pct,
-                              levels=stop_levels(spec, frame), take_profit_rr=spec.take_profit_rr)
+                              levels=stop_levels(spec, frame, sig),
+                              take_profit_rr=spec.take_profit_rr)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not request.include_trades:

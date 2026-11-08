@@ -46,11 +46,16 @@ export default function PriceChart({
 
     const markers: SeriesMarker<Time>[] = [];
     for (const t of trades) {
-      markers.push({ time: toSeconds(t.entry_time) as UTCTimestamp, position: "belowBar",
-        color: COLORS.up, shape: "arrowUp" });
-      markers.push({ time: toSeconds(t.exit_time) as UTCTimestamp, position: "aboveBar",
-        color: t.pnl >= 0 ? COLORS.up : COLORS.down, shape: "arrowDown",
-        text: `${t.return_pct >= 0 ? "+" : ""}${t.return_pct.toFixed(1)}%` });
+      const short = t.side === "short";
+      const result = `${t.return_pct >= 0 ? "+" : ""}${t.return_pct.toFixed(1)}%`;
+      const won = t.pnl >= 0 ? COLORS.up : COLORS.down;
+      // Long: buy arrow up below the bar, exit arrow down above. Short: the mirror image.
+      markers.push({ time: toSeconds(t.entry_time) as UTCTimestamp,
+        position: short ? "aboveBar" : "belowBar", color: short ? COLORS.down : COLORS.up,
+        shape: short ? "arrowDown" : "arrowUp", ...(short ? { text: "SAT" } : {}) });
+      markers.push({ time: toSeconds(t.exit_time) as UTCTimestamp,
+        position: short ? "belowBar" : "aboveBar", color: won,
+        shape: short ? "arrowUp" : "arrowDown", text: result });
     }
     markers.sort((a, b) => (a.time as number) - (b.time as number));
     createSeriesMarkers(price, markers);

@@ -78,6 +78,7 @@ export interface Trade {
   pnl: number;
   return_pct: number;
   forced_exit: boolean;
+  side?: "long" | "short";
   exit_reason?: string;
   r_multiple?: number | null;
   position_pct?: number;
@@ -154,6 +155,8 @@ export interface RulesText {
   indicators: string[];
   entry: string[];
   exit: string[];
+  short_entry?: string[];
+  short_exit?: string[];
   risk: string[];
 }
 

@@ -98,8 +98,10 @@ class Rules(BaseModel):
 class StrategySpec(BaseModel):
     name: str = Field(default="Özel strateji", max_length=80)
     indicators: list[Indicator] = Field(default_factory=list, max_length=12)
-    entry: Rules
-    exit: Rules = Field(default_factory=Rules)
+    entry: Rules = Field(default_factory=Rules)          # long entry
+    exit: Rules = Field(default_factory=Rules)           # long exit
+    short_entry: Rules = Field(default_factory=Rules)    # optional short side
+    short_exit: Rules = Field(default_factory=Rules)
     stop_loss_pct: float | None = Field(default=None, gt=0, le=50)
     take_profit_pct: float | None = Field(default=None, gt=0, le=500)
     max_bars_in_trade: int | None = Field(default=None, ge=1, le=5000)
@@ -108,6 +110,8 @@ class StrategySpec(BaseModel):
     stop_at: str | None = Field(default=None, max_length=40)
     # Target as a multiple of the actual risk (entry − stop), e.g. 1.5 for 1:1.5.
     take_profit_rr: float | None = Field(default=None, gt=0, le=20)
+    # Structural stop for shorts, e.g. "high" (the signal candle's upper wick).
+    short_stop_at: str | None = Field(default=None, max_length=40)
 
     @model_validator(mode="after")
     def _check_references(self) -> StrategySpec:
@@ -122,30 +126,54 @@ class StrategySpec(BaseModel):
                     raise ValueError(f"{ind.id}: 'of' must name an indicator declared before it")
                 _parse_operand(ind.of, types)
             types[ind.id] = ind.type
-        if not (self.entry.all or self.entry.any):
-            raise ValueError("entry needs at least one condition")
-        if self.stop_at is not None:
-            self.stop_at = self.stop_at.strip().lower()
-            parsed = _parse_operand(self.stop_at, types)
-            if isinstance(parsed, float):
-                raise ValueError("stop_at must be a price level (e.g. 'low'), not a number")
+        if not (self.has_long or self.has_short):
+            raise ValueError("entry (long) or short_entry needs at least one condition")
+        for field in ("stop_at", "short_stop_at"):
+            value = getattr(self, field)
+            if value is None:
+                continue
+            value = value.strip().lower()
+            setattr(self, field, value)
+            is_number = isinstance(_parse_operand(value, types), float)
+            if is_number:   # pydantic needs ValueError here
+                raise ValueError(f"{field} must be a price level (e.g. 'low' / 'high'), "
+                                 "not a number")
             if self.stop_loss_pct:
-                raise ValueError("use either stop_at or stop_loss_pct, not both")
+                raise ValueError(f"use either {field} or stop_loss_pct, not both")
+        if self.has_long and self.has_short and bool(self.stop_at) != bool(self.short_stop_at):
+            raise ValueError("with both sides, set both stop_at (long, e.g. 'low') and "
+                             "short_stop_at (short, e.g. 'high')")
+        if self.stop_at and not self.has_long:
+            raise ValueError("stop_at is for longs; use short_stop_at for a short-only strategy")
+        if self.short_stop_at and not self.has_short:
+            raise ValueError("short_stop_at needs short_entry")
         if self.take_profit_rr and self.take_profit_pct:
             raise ValueError("use either take_profit_rr or take_profit_pct, not both")
-        if self.take_profit_rr and not (self.stop_at or self.stop_loss_pct):
-            raise ValueError("take_profit_rr needs a stop (stop_at or stop_loss_pct)")
-        has_exit = (self.exit.all or self.exit.any or self.stop_loss_pct or self.stop_at
-                    or self.take_profit_pct or self.max_bars_in_trade)
-        if not has_exit:
-            raise ValueError("add at least one exit: exit condition, stop, target or max bars")
+        if self.take_profit_rr and not (self.stop_at or self.short_stop_at or self.stop_loss_pct):
+            raise ValueError("take_profit_rr needs a stop (stop_at / short_stop_at or stop_loss_pct)")
+        shared = self.stop_loss_pct or self.take_profit_pct or self.max_bars_in_trade
+        if self.has_long and not (self.exit.all or self.exit.any or self.stop_at or shared):
+            raise ValueError("add a long exit: exit condition, stop, target or max bars")
+        if self.has_short and not (self.short_exit.all or self.short_exit.any
+                                   or self.short_stop_at or shared):
+            raise ValueError("add a short exit: short_exit condition, stop, target or max bars")
         for cond in self.conditions():
             for side in (cond.left, cond.right):
                 _parse_operand(side, types)
         return self
 
+    @property
+    def has_long(self) -> bool:
+        return bool(self.entry.all or self.entry.any)
+
+    @property
+    def has_short(self) -> bool:
+        return bool(self.short_entry.all or self.short_entry.any)
+
     def conditions(self) -> list[Condition]:
-        return [*self.entry.all, *self.entry.any, *self.exit.all, *self.exit.any]
+        return [*self.entry.all, *self.entry.any, *self.exit.all, *self.exit.any,
+                *self.short_entry.all, *self.short_entry.any,
+                *self.short_exit.all, *self.short_exit.any]
 
     def warmup(self) -> int:
         chain: dict[str, int] = {}
@@ -154,8 +182,9 @@ class StrategySpec(BaseModel):
         base = max(chain.values(), default=0)
         shifts = []
         sides = [(c.left, c.right) for c in self.conditions()]
-        if self.stop_at:
-            sides.append((self.stop_at, "0"))
+        for lvl in (self.stop_at, self.short_stop_at):
+            if lvl:
+                sides.append((lvl, "0"))
         for pair in sides:
             for side in pair:
                 m = OPERAND_RE.match(side)
@@ -303,59 +332,108 @@ class _Context:
 
 
 def custom_signal(spec: StrategySpec, frame: pd.DataFrame, apply_stops: bool = True) -> pd.Series:
-    """apply_stops=False leaves stop/target to the risk engine (intrabar)."""
+    """Target position per bar: 1 long, -1 short, 0 flat (NaN during warm-up).
+
+    apply_stops=False leaves stops/targets to the risk engine (intrabar). With
+    apply_stops=True they are close-based against the actual fill price.
+    An opposite-side entry while in a position flips it at the next open.
+    """
     ctx = _Context(spec, frame)
-    enter, v_enter = ctx.rules(spec.entry)
-    exit_, v_exit = ctx.rules(spec.exit)
-    enter, exit_ = enter.to_numpy(), exit_.to_numpy()
-    valid = (v_enter & (v_exit if (spec.exit.all or spec.exit.any) else True)).to_numpy()
+    n = len(frame)
+
+    def side_rules(entry: Rules, exit_: Rules):
+        e, ve = ctx.rules(entry)
+        x, vx = ctx.rules(exit_)
+        has_x = bool(exit_.all or exit_.any)
+        return e.to_numpy(), ve.to_numpy(), x.to_numpy(), (vx.to_numpy() if has_x
+                                                             else np.ones(n, bool))
+
+    zeros = np.zeros(n, bool)
+    if spec.has_long:
+        l_in, l_ok, l_out, l_xok = side_rules(spec.entry, spec.exit)
+    else:
+        l_in, l_ok, l_out, l_xok = zeros, zeros, zeros, zeros
+    if spec.has_short:
+        s_in, s_ok, s_out, s_xok = side_rules(spec.short_entry, spec.short_exit)
+    else:
+        s_in, s_ok, s_out, s_xok = zeros, zeros, zeros, zeros
     warm = spec.warmup()
     opens = ctx.frame["open"].to_numpy(float)
     closes = ctx.frame["close"].to_numpy(float)
     sl = spec.stop_loss_pct / 100 if spec.stop_loss_pct and apply_stops else None
     tp = spec.take_profit_pct / 100 if spec.take_profit_pct and apply_stops else None
-    levels = stop_levels(spec, ctx.frame, ctx) if apply_stops else None
     rr = spec.take_profit_rr if apply_stops else None
+    lv_long, lv_short = _side_levels(spec, ctx)
+    structural = {1: lv_long, -1: lv_short}
 
-    out = np.full(len(frame), np.nan)
-    pos, entry_bar, entry_px = 0.0, -1, np.nan
-    stop_px = tgt_px = np.nan
-    pending = np.nan
-    for i in range(len(frame)):
-        if pos == 1.0 and i == entry_bar:
+    def wants(i: int) -> int:
+        """Fresh entry side at bar i (0 if none or ambiguous)."""
+        go_long = l_ok[i] and l_in[i] and (lv_long is None or np.isfinite(lv_long[i]))
+        go_short = s_ok[i] and s_in[i] and (lv_short is None or np.isfinite(lv_short[i]))
+        if go_long and go_short:
+            return 0
+        return 1 if go_long else (-1 if go_short else 0)
+
+    out = np.full(n, np.nan)
+    pos, entry_bar, entry_px = 0, -1, np.nan
+    stop_px = tgt_px = pending = np.nan
+    for i in range(n):
+        if pos != 0 and i == entry_bar:
             entry_px = opens[i]          # actual fill: this bar's open, known now
-            if levels is not None:
-                stop_px = pending
-            elif sl is not None:
-                stop_px = entry_px * (1 - sl)
-            if tp is not None:
-                tgt_px = entry_px * (1 + tp)
-            elif rr is not None and np.isfinite(stop_px) and stop_px < entry_px:
-                tgt_px = entry_px + rr * (entry_px - stop_px)
-        if pos == 0.0 and (i < warm or not valid[i]):
+            stop_px = tgt_px = np.nan
+            if apply_stops:
+                if structural[pos] is not None:
+                    stop_px = pending
+                elif sl is not None:
+                    stop_px = entry_px * (1 - pos * sl)
+                if tp is not None:
+                    tgt_px = entry_px * (1 + pos * tp)
+                elif rr is not None and np.isfinite(stop_px) and pos * (entry_px - stop_px) > 0:
+                    tgt_px = entry_px + rr * (entry_px - stop_px)
+        if i < warm:
             continue
-        if pos == 0.0:
-            if i >= warm and valid[i] and enter[i] and (levels is None or np.isfinite(levels[i])):
-                pos, entry_bar = 1.0, i + 1
-                pending = levels[i] if levels is not None else np.nan
+        new = wants(i)
+        if pos == 0:
+            if new != 0:
+                pos, entry_bar = new, i + 1
+                lv = structural[new]
+                pending = lv[i] if lv is not None else np.nan
         else:
             in_trade = i >= entry_bar
-            hit_sl = in_trade and np.isfinite(stop_px) and closes[i] <= stop_px
-            hit_tp = in_trade and np.isfinite(tgt_px) and closes[i] >= tgt_px
+            hit_sl = in_trade and np.isfinite(stop_px) and pos * (closes[i] - stop_px) <= 0
+            hit_tp = in_trade and np.isfinite(tgt_px) and pos * (closes[i] - tgt_px) >= 0
             timed = (in_trade and spec.max_bars_in_trade is not None
                      and i - entry_bar + 1 >= spec.max_bars_in_trade)
-            if (valid[i] and exit_[i]) or hit_sl or hit_tp or timed:
-                pos, entry_px, stop_px, tgt_px = 0.0, np.nan, np.nan, np.nan
+            rule_exit = (l_xok[i] and l_out[i]) if pos > 0 else (s_xok[i] and s_out[i])
+            if new == -pos:                       # opposite signal: flip
+                pos, entry_bar = new, i + 1
+                lv = structural[new]
+                pending = lv[i] if lv is not None else np.nan
+            elif rule_exit or hit_sl or hit_tp or timed:
+                pos, entry_px, stop_px, tgt_px = 0, np.nan, np.nan, np.nan
         out[i] = pos
     return pd.Series(out)
 
 
-def stop_levels(spec: StrategySpec, frame: pd.DataFrame, ctx: _Context | None = None):
-    """Per-bar structural stop price (None if the spec has no stop_at)."""
-    if not spec.stop_at:
+def _side_levels(spec: StrategySpec, ctx: _Context):
+    long_lv = ctx.operand(spec.stop_at).to_numpy(float) if spec.stop_at else None
+    short_lv = ctx.operand(spec.short_stop_at).to_numpy(float) if spec.short_stop_at else None
+    return long_lv, short_lv
+
+
+def stop_levels(spec: StrategySpec, frame: pd.DataFrame, signal: pd.Series | None = None):
+    """Per-bar structural stop price for the risk engine (None without stop_at /
+    short_stop_at). Where the signal is short, the short level is used."""
+    if not (spec.stop_at or spec.short_stop_at):
         return None
-    ctx = ctx or _Context(spec, frame)
-    return ctx.operand(spec.stop_at).to_numpy(float)
+    long_lv, short_lv = _side_levels(spec, _Context(spec, frame))
+    n = len(frame)
+    long_lv = long_lv if long_lv is not None else np.full(n, np.nan)
+    short_lv = short_lv if short_lv is not None else np.full(n, np.nan)
+    if signal is None:
+        return long_lv if spec.stop_at else short_lv
+    sig = signal.reset_index(drop=True).to_numpy(float)
+    return np.where(sig < 0, short_lv, long_lv)
 
 
 def overlay_lines(spec: StrategySpec, frame: pd.DataFrame):
@@ -429,5 +507,8 @@ def describe(spec: StrategySpec) -> dict:
         risk.append(f"Hedef: riskin {spec.take_profit_rr:g} katı (1:{spec.take_profit_rr:g} R:R)")
     if spec.max_bars_in_trade:
         risk.append(f"En fazla {spec.max_bars_in_trade} bar pozisyonda kal")
+    if spec.short_stop_at:
+        risk.append(f"Short stop: sinyal mumundaki '{_operand_tr(spec.short_stop_at)}' seviyesi")
     return {"indicators": [ind_tr(i) for i in spec.indicators], "entry": rules_tr(spec.entry),
-            "exit": rules_tr(spec.exit), "risk": risk}
+            "exit": rules_tr(spec.exit), "short_entry": rules_tr(spec.short_entry),
+            "short_exit": rules_tr(spec.short_exit), "risk": risk}
