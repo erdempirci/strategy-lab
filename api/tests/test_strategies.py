@@ -5,6 +5,7 @@ import pytest
 from app.services.market_data import demo_ohlcv
 from app.strategies import STRATEGIES, build_signal
 from app.strategies.library import rsi
+from app.strategies.presets import PRESET_SPECS
 
 
 def frame_from_close(closes, freq="1h", start="2024-01-01"):
@@ -27,7 +28,9 @@ def test_no_lookahead_for_every_strategy(strategy_id):
     alt = build_signal(strategy_id, tampered, params, "1h")
     pd.testing.assert_series_equal(base.iloc[: cut + 1], alt.iloc[: cut + 1])
     assert len(base) == len(frame)
-    assert set(base.dropna().unique()) <= {0.0, 1.0}
+    dsl = PRESET_SPECS.get(strategy_id)
+    allowed = {-1.0, 0.0, 1.0} if dsl is not None and dsl.has_short else {0.0, 1.0}
+    assert set(base.dropna().unique()) <= allowed
     assert base.notna().sum() > 0
 
 
