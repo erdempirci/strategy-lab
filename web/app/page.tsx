@@ -7,6 +7,7 @@ import { DiscoveryFields, DiscoveryReport } from "@/components/Discovery";
 import EquityChart from "@/components/EquityChart";
 import { MarketPicker, timeframesFor } from "@/components/MarketPicker";
 import { RISK_DEFAULTS, RiskFields, RiskReport } from "@/components/RiskPanel";
+import { MonteCarloPanel } from "@/components/MonteCarlo";
 import PriceChart from "@/components/PriceChart";
 import { OVERLAY_PALETTE } from "@/components/charts";
 import { compareAll, discover, fetchStrategies, runBacktest, runCustom } from "@/lib/api";
@@ -349,6 +350,7 @@ export default function Home() {
               </div>
 
               {result.risk && <RiskReport info={result.risk} />}
+              {result.monte_carlo && <MonteCarloPanel mc={result.monte_carlo} />}
 
               <div className="panel">
                 <div className="panel-head">
