@@ -18,7 +18,7 @@ export function useCustomStrategy() {
   const [json, setJson] = useState("");
   const [busy, setBusy] = useState<"ai" | "validate" | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [status, setStatus] = useState<{ enabled: boolean; access_code_required: boolean } | null>(null);
+  const [status, setStatus] = useState<{ enabled: boolean; access_code_required: boolean; provider_label?: string | null } | null>(null);
   const [accessCode, setAccessCodeState] = useState("");
   const [saved, setSaved] = useState<SavedStrategy[]>([]);
 

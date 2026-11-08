@@ -19,10 +19,16 @@ Environment variables (all optional):
 
 | Variable | Purpose |
 |----------|---------|
-| `ANTHROPIC_API_KEY` | enables the AI strategy builder ("Kendi stratejim") |
-| `AI_ACCESS_CODE` | if set, the AI builder asks for this code (protects your API credits) |
-| `ANTHROPIC_MODEL` | default `claude-sonnet-5-5` |
+| `GEMINI_API_KEY` | AI strategy builder via Gemini — free key from Google AI Studio |
+| `NVIDIA_API_KEY` | AI strategy builder via NVIDIA build — free key from build.nvidia.com |
+| `ANTHROPIC_API_KEY` | AI strategy builder via Claude (paid API) |
+| `AI_PROVIDER` | `gemini` / `nvidia` / `anthropic` when more than one key is set (default order: anthropic, gemini, nvidia) |
+| `GEMINI_MODEL` / `NVIDIA_MODEL` / `ANTHROPIC_MODEL` | defaults `gemini-3.8-flash` / `meta/llama-3.1-70b-instruct` / `claude-sonnet-5-5` |
+| `AI_ACCESS_CODE` | if set, the AI builder asks for this code (protects your quota) |
 | `BINANCE_BASE_URL` | default `https://data-api.binance.vision` |
+| `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | Masa journal storage (server side only); a secret key `sb_secret_…` or a legacy `service_role` key |
+| `DESK_ACCESS_CODE` | required to change the desk (add strategies, settings, run now) |
+| `CRON_SECRET` | lets the hourly GitHub Action run the desk |
 
 - `/` dashboard
 - `/api/health` · `/api/docs` (Swagger) · `GET /api/strategies` · `POST /api/backtests` ·
@@ -125,6 +131,47 @@ profitable, luck not ruled out) · **failed holdout**.
 Calibration (tests): 0 robust picks on random-walk markets across seeds; finds a planted
 momentum edge. On real markets "nothing robust found" is a normal, useful outcome.
 
+## US index futures (`api/app/data_adapters/yahoo.py`, `markets.py`)
+- `US100` → `NQ=F` (Nasdaq 100 futures), `US500` → `ES=F`, from Yahoo's public chart API
+  (no key). Aliases: NAS100, NQ, NDX, USTEC / SPX500, ES, SPX.
+- 1h (≈ 2 years max), 2h/4h (resampled from 60m, UTC-aligned) and 1d.
+- Quotes are ~10 min delayed: a bar only counts as closed 15 min after its end, so the
+  hourly desk run is at :17.
+- Session market: weekend and daily-break gaps (< 80 h) are not reported as data gaps;
+  the Tarayıcı compares volume with the same UTC hour's average.
+- Default costs 0.5 + 0.5 bps (NQ commission + 1 tick ≈ 0.2 bps). The continuous contract
+  jumps at quarterly rolls. Long only, like the rest of the engine.
+- Keşfet can be limited to one strategy family, e.g. `families: ["engulfing"]`
+  (bullish engulfing with trend / low-sweep / RSI-pullback context, bearish engulfing exit).
+
+## Masa — trading desk (`api/app/desk/`)
+Forward-tests discovered strategies on a **paper** account, hourly. Rule-based roles, no LLM,
+no orders:
+
+| Role | Does |
+|------|------|
+| Tarayıcı | fresh entry signal of a desk strategy on the last closed bar; volume ≥ 2× its 30-day average on the watchlist |
+| Giriş-Çıkış | entry = next bar open, stop = strategy's ATR multiple, target = its R:R |
+| Risk | sizes from desk equity (0.5%/trade); **RED** if today −3%, total −10%, open-position cap, or if *all open stops plus this one* would cross a limit |
+| Şüpheci | AL / BEKLE / GEÇ: waits on "promising" strategies until 10 live trades prove them, blocks a strategy whose live PF fell < 0.8, waits on extreme volatility, same-symbol exposure or data gaps |
+| Günlükçü | journals every decision with each role's message; weekly report incl. an audit of what the Şüpheci's vetoes would have earned |
+
+- Only **robust/promising** Keşfet finalists can join the desk ("Masaya ekle"); timeframes ≥ 1h.
+- Paper trades are produced by `run_risk_backtest` itself on a signal that keeps only approved
+  entries, so desk results and backtests cannot drift apart (tested). Closed trades are frozen;
+  every signal, approved or not, is also tracked in a **shadow** book.
+- Only the signal of the last closed bar can be approved; older ones are journaled as missed.
+- Because Risk gates on worst case (every open stop hit), the daily / total limits can only be
+  crossed by price gaps; positions are not force-closed.
+- Endpoints: `GET /api/desk/status|state|report`, `POST /api/desk/run`,
+  `POST /api/desk/strategies`, `PATCH /api/desk/strategies/{id}`, `PUT /api/desk/settings`.
+
+Setup: create a Supabase project → run `supabase/migrations/001_desk.sql` in the SQL editor →
+set `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `DESK_ACCESS_CODE`, `CRON_SECRET` on Vercel →
+add repo secrets `DESK_URL` and `CRON_SECRET` for `.github/workflows/desk.yml` (hourly at :17;
+Vercel Hobby crons are daily-only). GitHub pauses scheduled workflows after 60 days without
+repo activity; re-enable from the Actions tab.
+
 ## Backtest engine
 Trade-based, long/flat (`api/app/services/backtester.py`):
 - Signal at bar close → fill at **next bar open** (no look-ahead).
@@ -142,9 +189,9 @@ market calendars.
 - **Binance** spot, public klines, closed candles only. Default host
   `data-api.binance.vision` (`api.binance.com` returns 451 for US IPs, incl. Vercel).
 - **MT5** CSV exports → UTC with the broker's server offset, historical spread kept.
-- **Stocks / ETFs** daily (`data_source: "stocks"`, e.g. SPY): Yahoo chart API with
-  dividend/split-adjusted prices, Stooq as fallback; today's bar dropped until the US close.
-  Sharpe uses 252 sessions/year; weekends/holidays are not reported as gaps.
+- **Stocks / ETFs** daily on the Yahoo source (`data_source: "yahoo"` with any symbol other
+  than a named future, e.g. SPY, QQQ): dividend/split-adjusted, Stooq fallback; today's bar
+  dropped until the US close. Sharpe uses 252 sessions/year; weekends are not gaps.
 - **Demo** deterministic synthetic data — clearly flagged, never real performance.
 
 ## Roadmap
@@ -156,5 +203,7 @@ market calendars.
 5. ✅ AI strategy builder → validated JSON DSL ("Kendi stratejim")
 6. ✅ Discovery: search + train/validation/holdout + deflated Sharpe
 7. Next: walk-forward folds, Monte Carlo, multi-symbol robustness
-8. Funded / prop-firm risk simulator
-9. Paper trading
+8. ✅ Masa: hourly paper-trading desk with rule-based roles and a journal
+9. ✅ US100 / US500 futures data (Yahoo) for Keşfet and the desk
+10. Short side in the engine
+11. Funded / prop-firm risk simulator

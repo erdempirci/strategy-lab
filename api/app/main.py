@@ -6,10 +6,14 @@ from fastapi import APIRouter, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
 
-from app.ai.translator import AIError, translate
-from app.data_adapters.binance import BinanceDataError, fetch_binance_ohlcv
+from app.ai.translator import AIError, active_provider, provider_label, translate
+from app.data_adapters.binance import BinanceDataError
+from app.data_adapters.markets import MARKETS, load_ohlcv, market_of
 from app.data_adapters.normalize import quality_report
-from app.data_adapters.stocks import StockDataError, fetch_stock_daily
+from app.data_adapters.stocks import StockDataError
+from app.data_adapters.yahoo import YahooDataError
+from app.desk.api import router as desk_router
+from app.discovery.candidates import FAMILY_LABELS
 from app.discovery.engine import run_discovery
 from app.schemas import (
     AIStrategyRequest,
@@ -20,12 +24,11 @@ from app.schemas import (
     SpecRequest,
 )
 from app.services.backtester import run_backtest
-from app.services.market_data import demo_ohlcv
 from app.services.risk_engine import RiskConfig, run_risk_backtest
 from app.strategies import STRATEGIES, build_signal
 from app.strategies.dsl import StrategySpec, custom_signal, describe, overlay_lines
 
-ENGINE_VERSION = "0.6.0"
+ENGINE_VERSION = "0.7.0"
 
 app = FastAPI(
     title="Strategy Lab API",
@@ -50,15 +53,9 @@ app.add_middleware(CORSMiddleware, allow_origins=[o for o in _origins if o],
 
 def _load_frame(source: str, symbol: str, timeframe: str, bars: int):
     try:
-        if source == "binance":
-            frame, label = fetch_binance_ohlcv(symbol, timeframe, bars), "binance_spot"
-        elif source == "stocks":
-            frame, label = fetch_stock_daily(symbol, timeframe, bars)
-        else:
-            frame = demo_ohlcv(symbol=symbol, timeframe=timeframe, bars=bars)
-            label = "deterministic_demo"
+        frame, label = load_ohlcv(source, symbol, timeframe, bars)
         return frame.sort_values("timestamp").reset_index(drop=True), label
-    except (BinanceDataError, StockDataError) as exc:
+    except (BinanceDataError, YahooDataError, StockDataError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -102,13 +99,15 @@ def _run(strategy_id: str, raw_params: dict, frame, req) -> tuple[dict, dict]:
 
 
 def _year_minutes(req) -> int:
-    """Calendar for annualising Sharpe: ~252 sessions on stock exchanges, 365 days in crypto."""
-    return 252 * 24 * 60 if req.data_source == "stocks" else 365 * 24 * 60
+    """Calendar for annualising Sharpe: ~252 sessions (Yahoo futures / stocks), 365 in crypto."""
+    return 252 * 24 * 60 if req.data_source == "yahoo" else 365 * 24 * 60
 
 
 def _quality(frame, req) -> dict:
-    normal = pd.Timedelta(days=4) if req.data_source == "stocks" else None
-    return quality_report(frame, req.timeframe, normal)
+    gap = _expected_gap(req.symbol)
+    if gap is None and req.data_source == "yahoo":
+        gap = pd.Timedelta(days=4)          # stock/ETF daily: weekends + holidays
+    return quality_report(frame, req.timeframe, gap)
 
 
 def _execute(frame, signal, req, stop_pct=None, take_profit_pct=None) -> dict:
@@ -168,6 +167,19 @@ def get_demo_data(symbol: str = "BTC/USDT", timeframe: str = "1h", bars: int = 5
     frame, source = _load_frame("demo", symbol, timeframe, bars)
     return {"symbol": symbol, "timeframe": timeframe, "source": source, "bars": len(frame),
             "data": frame.tail(10).to_dict(orient="records")}
+
+
+def _expected_gap(symbol: str):
+    m = market_of(symbol)
+    return m.expected_gap if m else None
+
+
+@router.get("/markets")
+def markets() -> dict:
+    return {"markets": [{"symbol": m.symbol, "label": m.label, "fee_bps": m.fee_bps,
+                         "slippage_bps": m.slippage_bps, "timeframes": ["1h", "2h", "4h", "1d"]}
+                        for m in MARKETS.values()],
+            "families": [{"id": k, "label": v} for k, v in FAMILY_LABELS.items()]}
 
 
 @router.get("/market-data/binance")
@@ -327,7 +339,8 @@ def discover(request: DiscoverRequest) -> dict:
     try:
         out = run_discovery(frame, request.timeframe, RiskConfig(**risk.model_dump()),
                             request.initial_capital, request.fee_bps, request.slippage_bps,
-                            n_candidates=request.n_candidates, seed=request.seed)
+                            n_candidates=request.n_candidates, seed=request.seed,
+                            families=request.families)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"symbol": request.symbol, "timeframe": request.timeframe, "data_source": source,
@@ -342,7 +355,9 @@ def _access_code() -> str | None:
 
 @router.get("/ai/status")
 def ai_status() -> dict:
-    return {"enabled": bool(os.getenv("ANTHROPIC_API_KEY")),
+    provider = active_provider()
+    return {"enabled": provider is not None, "provider": provider,
+            "provider_label": provider_label(provider),
             "access_code_required": _access_code() is not None}
 
 
@@ -359,5 +374,6 @@ def ai_strategy(request: AIStrategyRequest) -> dict:
     return {**out, "rules": describe(spec)}
 
 
+router.include_router(desk_router)
 app.include_router(router, prefix="/api")
 app.include_router(router, include_in_schema=False)

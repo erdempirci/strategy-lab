@@ -89,11 +89,13 @@ def test_stock_backtest_uses_252_day_calendar(monkeypatch):
     from app.services.market_data import demo_ohlcv
 
     frame = demo_ohlcv("SPY", "1d", 1500)
-    monkeypatch.setattr(main, "fetch_stock_daily", lambda s, t, b: (frame, "yahoo_daily_adjusted"))
-    monkeypatch.setattr(main, "demo_ohlcv", lambda **kw: frame)
+    from app.data_adapters import stocks
+    monkeypatch.setattr(stocks, "fetch_stock_daily", lambda s, t, b: (frame, "yahoo_daily_adjusted"))
+    import app.services.market_data as md
+    monkeypatch.setattr(md, "demo_ohlcv", lambda **kw: frame)
     api = TestClient(main.app)
     req = {"strategy": "qs_rsi2", "timeframe": "1d", "bars": 1500, "symbol": "SPY"}
-    stock = api.post("/api/backtests", json={**req, "data_source": "stocks"}).json()
+    stock = api.post("/api/backtests", json={**req, "data_source": "yahoo"}).json()
     demo = api.post("/api/backtests", json={**req, "data_source": "demo"}).json()
     assert stock["data_source"] == "yahoo_daily_adjusted"
     assert stock["metrics"]["trades"] == demo["metrics"]["trades"]
