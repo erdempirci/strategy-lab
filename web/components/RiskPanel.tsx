@@ -64,7 +64,7 @@ export function RiskReport({ info }: { info: RiskInfo }) {
   const c = info.config;
   const dayOk = c.daily_loss_limit_pct == null || info.daily_limit_breaches === 0;
   const reasons: Record<string, string> = {
-    stop: "stop", target: "hedef", signal: "sinyal", daily_limit: "günlük limit",
+    stop: "stop", target: "hedef", signal: "sinyal", time: "süre", daily_limit: "günlük limit",
     max_total_loss: "toplam limit", end_of_data: "veri sonu",
   };
   return (

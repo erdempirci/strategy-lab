@@ -63,9 +63,19 @@ def run_risk_backtest(
     trading_minutes_per_year: int = 365 * 24 * 60,
     stop_levels: np.ndarray | None = None,
     take_profit_rr_override: float | None = None,
+    events: dict | None = None,
 ) -> dict:
     """stop_levels: per-bar stop price decided at the signal bar's close (structural stop,
-    e.g. the signal candle's low). Overrides the ATR/% stop when given."""
+    e.g. the signal candle's low). Overrides the ATR/% stop when given.
+
+    events: rule-based strategies (the DSL) pass their entry/exit EVENTS instead of relying
+    on the state signal, so that a position closed by a stop or target can be re-entered on
+    the next entry event:
+        entry      array of +1 / -1 / 0 at the signal bar (new entry setup on that bar)
+        exit_long  bool array, long exit rule true at that bar
+        exit_short bool array, short exit rule true at that bar
+        max_bars   int | None, close at the open after this many bars in the trade
+    """
     if initial_capital <= 0:
         raise ValueError("initial_capital must be positive")
     data = _validate_frame(frame)
@@ -81,6 +91,13 @@ def run_risk_backtest(
     times = data["timestamp"]
     days = pd.to_datetime(times, utc=True).dt.date.to_numpy()
     use_pct = stop_pct_override is not None or risk.stop_type == "pct"
+    if events is not None:
+        ev_in = np.asarray(events["entry"], float)
+        ev_xl = np.asarray(events.get("exit_long", np.zeros(len(data), bool)), bool)
+        ev_xs = np.asarray(events.get("exit_short", np.zeros(len(data), bool)), bool)
+        ev_max = events.get("max_bars")
+        if not (len(ev_in) == len(ev_xl) == len(ev_xs) == len(data)):
+            raise ValueError("events must have the same length as frame")
     stop_pct = (stop_pct_override if stop_pct_override is not None else risk.stop_pct) / 100
     atr = None if use_pct else wilder_atr(data, risk.stop_atr_period).to_numpy()
     floor = initial_capital * (1 - risk.max_total_loss_pct / 100) if risk.max_total_loss_pct else None
@@ -130,14 +147,30 @@ def run_risk_backtest(
         prev_sig = sig[i - 1] if i >= 1 else np.nan
         prev2 = sig[i - 2] if i >= 2 else np.nan
 
-        # 1) signal exit at the open (signal went flat or flipped side)
-        if pos is not None and prev_sig != pos["side"]:
-            exit_trade(i, o[i], "signal")
+        # 1) exit at the open: the signal went flat / flipped, or (events) a rule exit,
+        #    an opposite entry or the time limit
+        if pos is not None:
+            if events is None:
+                leave = prev_sig != pos["side"]
+                why = "signal"
+            else:
+                k = i - 1
+                rule = ev_xl[k] if pos["side"] > 0 else ev_xs[k]
+                flip = ev_in[k] == -pos["side"]
+                timed = ev_max is not None and i - pos["index"] >= ev_max
+                leave = bool(rule or flip or timed)
+                why = "time" if timed and not (rule or flip) else "signal"
+            if leave:
+                exit_trade(i, o[i], why)
 
-        # 2) fresh entry at the open: the signal just moved into ±1
-        if (pos is None and blown_at is None and not day_blocked
-                and prev_sig in (1.0, -1.0) and np.isfinite(prev2) and prev2 != prev_sig):
-            side = int(prev_sig)
+        # 2) entry at the open: a fresh move of the signal into ±1, or an entry event
+        if events is None:
+            want = (int(prev_sig) if prev_sig in (1.0, -1.0) and np.isfinite(prev2)
+                    and prev2 != prev_sig else 0)
+        else:
+            want = int(ev_in[i - 1]) if i >= 1 else 0
+        if pos is None and blown_at is None and not day_blocked and want != 0:
+            side = want
             fill = o[i] * (1 + side * slip)
             if stop_levels is not None:
                 level = stop_levels[i - 1]
@@ -238,8 +271,8 @@ def run_risk_backtest(
         "positive_months_pct": round(float(np.mean([m > 0 for m in months]) * 100), 1)
         if months else 0.0,
         "exit_reasons": {k: sum(t["exit_reason"] == k for t in trades)
-                         for k in ("signal", "stop", "target", "daily_limit", "max_total_loss",
-                                   "end_of_data")},
+                         for k in ("signal", "time", "stop", "target", "daily_limit",
+                                   "max_total_loss", "end_of_data")},
         "skipped_entries_no_stop": skipped_no_stop,
         "trading_days": len(daily),
     }

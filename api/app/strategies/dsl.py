@@ -415,6 +415,47 @@ def custom_signal(spec: StrategySpec, frame: pd.DataFrame, apply_stops: bool = T
     return pd.Series(out)
 
 
+def strategy_events(spec: StrategySpec, frame: pd.DataFrame) -> dict:
+    """Entry / exit events for the risk engine (see run_risk_backtest(events=...)).
+
+    An entry event fires on the bar where a side's entry rules BECOME true (rising edge),
+    so a setup that stays true does not re-enter on every bar after a stop, while every new
+    pattern (e.g. each engulfing candle) is a new opportunity.
+    """
+    ctx = _Context(spec, frame)
+    n = len(frame)
+    warm = spec.warmup()
+    zeros = np.zeros(n, bool)
+
+    def side(entry: Rules, exit_: Rules, enabled: bool):
+        if not enabled:
+            return zeros, zeros
+        e, ve = ctx.rules(entry)
+        go = (e & ve).to_numpy()
+        if exit_.all or exit_.any:
+            x, vx = ctx.rules(exit_)
+            out = (x & vx).to_numpy()
+        else:
+            out = zeros
+        return go, out
+
+    l_go, l_out = side(spec.entry, spec.exit, spec.has_long)
+    s_go, s_out = side(spec.short_entry, spec.short_exit, spec.has_short)
+    lv_long, lv_short = _side_levels(spec, ctx)
+    if lv_long is not None:
+        l_go = l_go & np.isfinite(lv_long)
+    if lv_short is not None:
+        s_go = s_go & np.isfinite(lv_short)
+    l_go, s_go = l_go.copy(), s_go.copy()
+    l_go[:warm] = False                  # warm-up bars count as "no setup"
+    s_go[:warm] = False
+    rise_l = l_go & ~np.r_[False, l_go[:-1]]
+    rise_s = s_go & ~np.r_[False, s_go[:-1]]
+    entry = np.where(rise_l & ~rise_s, 1.0, np.where(rise_s & ~rise_l, -1.0, 0.0))
+    return {"entry": entry, "exit_long": l_out, "exit_short": s_out,
+            "max_bars": spec.max_bars_in_trade}
+
+
 def _side_levels(spec: StrategySpec, ctx: _Context):
     long_lv = ctx.operand(spec.stop_at).to_numpy(float) if spec.stop_at else None
     short_lv = ctx.operand(spec.short_stop_at).to_numpy(float) if spec.short_stop_at else None
