@@ -130,11 +130,12 @@ def _public(r: dict) -> dict:
 
 def run_discovery(frame: pd.DataFrame, timeframe: str, risk: RiskConfig, initial_capital: float,
                   fee_bps: float, slippage_bps: float, n_candidates: int = 150, seed: int = 42,
-                  time_budget_s: float = 45.0, finalists: int = 5) -> dict:
+                  time_budget_s: float = 45.0, finalists: int = 5,
+                  families: list[str] | None = None) -> dict:
     started = time.monotonic()
     disc = Discovery(frame, timeframe, risk, initial_capital, fee_bps, slippage_bps)
     intraday = timeframe_minutes(timeframe) <= 60
-    candidates = generate(n_candidates, seed, intraday=intraday)
+    candidates = generate(n_candidates, seed, intraday=intraday, families=families)
 
     bars_train = disc.segments["train"][1]
     min_train = max(20, bars_train // 150)
@@ -210,6 +211,7 @@ def run_discovery(frame: pd.DataFrame, timeframe: str, risk: RiskConfig, initial
         "segments": seg_info,
         "results": results,
         "seed": seed,
+        "families": families or "all",
         "elapsed_s": round(time.monotonic() - started, 2),
         "time_budget_hit": evaluated < len(candidates),
     }

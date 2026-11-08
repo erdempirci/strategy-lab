@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { CustomEditor, RulesCard } from "@/components/CustomStrategy";
+import { DeskSide, DeskView } from "@/components/Desk";
 import { DiscoveryFields, DiscoveryReport } from "@/components/Discovery";
 import EquityChart from "@/components/EquityChart";
 import { RISK_DEFAULTS, RiskFields, RiskReport } from "@/components/RiskPanel";
@@ -9,6 +10,7 @@ import PriceChart from "@/components/PriceChart";
 import { OVERLAY_PALETTE } from "@/components/charts";
 import { compareAll, discover, fetchStrategies, runBacktest, runCustom } from "@/lib/api";
 import { useCustomStrategy } from "@/lib/useCustomStrategy";
+import { useDesk } from "@/lib/useDesk";
 import { fmt, pct, shortTime, tone } from "@/lib/format";
 import type {
   BacktestResult, CompareResult, DiscoveryCandidate, DiscoveryResult, MarketParams, RunRecord,
@@ -27,18 +29,21 @@ const MARKET_DEFAULTS: MarketParams = {
 };
 
 const TIMEFRAMES = ["15m", "30m", "1h", "4h", "1d"];
+const YAHOO_TIMEFRAMES = ["1h", "2h", "4h", "1d"];
 const EXIT_TR: Record<string, string> = {
   signal: "sinyal", stop: "stop", target: "hedef", daily_limit: "günlük limit",
   max_total_loss: "toplam limit", end_of_data: "veri sonu",
 };
 
 export default function Home() {
-  const [mode, setMode] = useState<"library" | "custom" | "discover">("library");
+  const [mode, setMode] = useState<"library" | "custom" | "discover" | "desk">("library");
   const [discN, setDiscN] = useState(150);
   const [discSeed, setDiscSeed] = useState(42);
+  const [discFamily, setDiscFamily] = useState("");
   const [discBars, setDiscBars] = useState(10000);
   const [discovery, setDiscovery] = useState<DiscoveryResult | null>(null);
   const custom = useCustomStrategy();
+  const desk = useDesk(mode === "desk");
   const [market, setMarket] = useState<MarketParams>(MARKET_DEFAULTS);
   const [strategies, setStrategies] = useState<StrategySpec[]>([]);
   const [strategyId, setStrategyId] = useState("ema_crossover");
@@ -65,6 +70,20 @@ export default function Home() {
 
   const setM = <K extends keyof MarketParams>(key: K, value: MarketParams[K]) =>
     setMarket((m) => ({ ...m, [key]: value }));
+  // Switching to/from US futures also switches to sensible symbol, timeframe and costs.
+  const pickSource = (source: MarketParams["data_source"]) =>
+    setMarket((m) => {
+      if (source === "yahoo") {
+        return { ...m, data_source: source, symbol: ["US100", "US500"].includes(m.symbol) ? m.symbol : "US100",
+                 timeframe: YAHOO_TIMEFRAMES.includes(m.timeframe) ? m.timeframe : "1h",
+                 fee_bps: 0.5, slippage_bps: 0.5 };
+      }
+      if (m.data_source === "yahoo") {
+        return { ...m, data_source: source, symbol: "BTC/USDT", fee_bps: MARKET_DEFAULTS.fee_bps,
+                 slippage_bps: MARKET_DEFAULTS.slippage_bps };
+      }
+      return { ...m, data_source: source };
+    });
   const numM = (key: keyof MarketParams) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setM(key, Number(e.target.value) as never);
   const setP = (name: string, value: number) =>
@@ -98,7 +117,8 @@ export default function Home() {
     setLoading("discover");
     setError(null);
     try {
-      setDiscovery(await discover({ ...market, bars: discBars }, discN, discSeed));
+      setDiscovery(await discover({ ...market, bars: discBars }, discN, discSeed,
+        discFamily ? [discFamily] : undefined));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -170,8 +190,10 @@ export default function Home() {
             <button type="button" role="tab" aria-selected={mode === "library"} className={mode === "library" ? "on" : ""} onClick={() => setMode("library")}>Hazır</button>
             <button type="button" role="tab" aria-selected={mode === "custom"} className={mode === "custom" ? "on" : ""} onClick={() => setMode("custom")}>Kendi</button>
             <button type="button" role="tab" aria-selected={mode === "discover"} className={mode === "discover" ? "on" : ""} onClick={() => setMode("discover")}>Keşfet</button>
+            <button type="button" role="tab" aria-selected={mode === "desk"} className={mode === "desk" ? "on" : ""} onClick={() => setMode("desk")}>Masa</button>
           </div>
-          {mode === "discover" ? <DiscoveryFields n={discN} seed={discSeed} onN={setDiscN} onSeed={setDiscSeed} />
+          {mode === "desk" ? <DeskSide desk={desk} /> : (<>
+          {mode === "discover" ? <DiscoveryFields n={discN} seed={discSeed} onN={setDiscN} onSeed={setDiscSeed} family={discFamily} onFamily={setDiscFamily} />
           : mode === "custom" ? <CustomEditor c={custom} /> : (<>
           <label>Strateji
             <select value={strategyId} onChange={(e) => setStrategyId(e.target.value)}>
@@ -196,18 +218,27 @@ export default function Home() {
 
           <h2>Piyasa</h2>
           <label>Veri kaynağı
-            <select value={market.data_source} onChange={(e) => setM("data_source", e.target.value as MarketParams["data_source"])}>
-              <option value="binance">Binance (gerçek veri)</option>
+            <select value={market.data_source} onChange={(e) => pickSource(e.target.value as MarketParams["data_source"])}>
+              <option value="binance">Kripto · Binance</option>
+              <option value="yahoo">US vadeli · Yahoo (US100, US500)</option>
               <option value="demo">Demo (sentetik)</option>
             </select>
           </label>
+          {market.data_source === "yahoo" && (
+            <p className="hint">US100 = Nasdaq 100 vadeli (NQ), US500 = S&amp;P 500 vadeli (ES). Haftada 5 gün, günde ~23 saat işlem görür; veri ~10 dk gecikmeli, 1h ve üstü zaman dilimi. Masa yalnızca uzun (alış) işlem açar.</p>
+          )}
           <div className="row">
             <label>Sembol
-              <input value={market.symbol} onChange={(e) => setM("symbol", e.target.value.toUpperCase())} />
+              {market.data_source === "yahoo" ? (
+                <select value={market.symbol} onChange={(e) => setM("symbol", e.target.value)}>
+                  <option value="US100">US100</option>
+                  <option value="US500">US500</option>
+                </select>
+              ) : <input value={market.symbol} onChange={(e) => setM("symbol", e.target.value.toUpperCase())} />}
             </label>
             <label>Zaman dilimi
               <select value={market.timeframe} onChange={(e) => setM("timeframe", e.target.value)}>
-                {TIMEFRAMES.map((t) => <option key={t}>{t}</option>)}
+                {(market.data_source === "yahoo" ? YAHOO_TIMEFRAMES : TIMEFRAMES).map((t) => <option key={t}>{t}</option>)}
               </select>
             </label>
           </div>
@@ -225,7 +256,7 @@ export default function Home() {
             <label>Komisyon (bps)<input type="number" min={0} step={0.5} value={market.fee_bps} onChange={numM("fee_bps")} /></label>
             <label>Slippage (bps)<input type="number" min={0} step={0.5} value={market.slippage_bps} onChange={numM("slippage_bps")} /></label>
           </div>
-          <p className="hint">1 bps = %0.01. Binance spot taker komisyonu ≈ 10 bps. Seans saatleri UTC.</p>
+          <p className="hint">1 bps = %0.01. Binance spot taker komisyonu ≈ 10 bps; NQ/ES vadelide komisyon + 1 tick kayma toplamı ≈ 0,2 bps (0,5 + 0,5 temkinli). Seans saatleri UTC.</p>
           <h2>Risk kuralları</h2>
           <RiskFields risk={market.risk ?? null} onChange={(r) => setM("risk", r)} />
           {mode === "discover" ? (
@@ -239,10 +270,18 @@ export default function Home() {
             </button>
           )}
           {error && <p className="error">{error}</p>}
+          </>)}
         </form>
 
         <section className="results">
-          {mode === "discover" && discovery && <DiscoveryReport d={discovery} onOpen={openCandidate} />}
+          {mode === "desk" && <DeskView desk={desk} />}
+          {mode === "discover" && discovery && (
+            <DiscoveryReport d={discovery} onOpen={openCandidate} added={desk.added} busy={desk.busy}
+              onAdd={(c) => desk.addFromDiscovery(discovery, c)} />
+          )}
+          {mode === "discover" && (desk.notice || desk.error) && (
+            <div className={`banner ${desk.error ? "warn" : ""}`}>{desk.error ?? desk.notice}</div>
+          )}
           {mode === "discover" && !discovery && !loading && (
             <div className="panel empty">
               <h2>Strateji keşfi</h2>
@@ -250,7 +289,7 @@ export default function Home() {
             </div>
           )}
           {mode === "custom" && <RulesCard c={custom} />}
-          {comparison && (
+          {mode !== "desk" && comparison && (
             <div className="panel">
               <div className="panel-head">
                 <h2>Strateji karşılaştırması</h2>
@@ -304,7 +343,7 @@ export default function Home() {
             </div>
           )}
 
-          {result && m && (
+          {mode !== "desk" && result && m && (
             <>
               {result.synthetic_data ? (
                 <div className="banner warn">Sentetik demo verisi — bu sonuçlar gerçek piyasa performansı değildir.</div>
@@ -395,7 +434,7 @@ export default function Home() {
             </>
           )}
 
-          {runs.length > 1 && (
+          {mode !== "desk" && runs.length > 1 && (
             <div className="panel">
               <div className="panel-head"><h2>Çalıştırma geçmişi</h2><span className="muted">bu oturum · dokununca açılır</span></div>
               <div className="table-wrap">
@@ -421,7 +460,7 @@ export default function Home() {
             </div>
           )}
 
-          <p className="disclaimer">Geçmiş performans gelecekteki sonuçları garanti etmez. Bu panel yalnızca araştırma içindir. Hazır ve kendi stratejilerinin sonuçları örneklem içidir; görmediği veride sınamak için Keşfet sekmesini kullan.</p>
+          {mode !== "desk" && <p className="disclaimer">Geçmiş performans gelecekteki sonuçları garanti etmez. Bu panel yalnızca araştırma içindir. Hazır ve kendi stratejilerinin sonuçları örneklem içidir; görmediği veride sınamak için Keşfet sekmesini kullan.</p>}
         </section>
       </div>
     </main>
