@@ -18,6 +18,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "httpx>=0.27", "ruff>=0.6"]
+# Reference libraries used only by tests to cross-check indicators and risk metrics.
+reference = ["ta>=0.11", "quantstats>=0.0.80"]
 
 [tool.setuptools.packages.find]
 include = ["app*"]

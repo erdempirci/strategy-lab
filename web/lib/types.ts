@@ -118,6 +118,16 @@ export interface Metrics {
   total_fees: number;
   exposure_pct: number;
   sharpe_annualized: number;
+  // Return-distribution risk metrics (quantstats formulas, api/app/services/risk_metrics.py)
+  cagr_pct?: number | null;
+  volatility_annual_pct?: number | null;
+  sortino_annualized?: number | null;
+  calmar?: number | null;
+  ulcer_index_pct?: number | null;
+  var_95_bar_pct?: number | null;
+  cvar_95_bar_pct?: number | null;
+  tail_ratio?: number | null;
+  omega?: number | null;
 }
 
 export interface DataQuality {

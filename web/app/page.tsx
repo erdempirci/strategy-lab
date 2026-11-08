@@ -349,6 +349,21 @@ export default function Home() {
                 <Metric label="Beklenti / işlem" value={fmt(m.expectancy_per_trade)} cls={tone(m.expectancy_per_trade)} />
               </div>
 
+              {m.sortino_annualized !== undefined && (
+                <div className="panel">
+                  <div className="panel-head"><h2>Risk profili</h2><span className="hint">quantstats formülleri · bar getirileri</span></div>
+                  <div className="metrics">
+                    <Metric label="CAGR" value={m.cagr_pct == null ? "—" : pct(m.cagr_pct)} cls={tone(m.cagr_pct ?? 0)} sub={`Yıllık oynaklık %${fmt(m.volatility_annual_pct ?? null, 1)}`} />
+                    <Metric label="Sortino" value={fmt(m.sortino_annualized ?? null)} cls={tone(m.sortino_annualized ?? 0)} sub="yalnızca aşağı yönlü oynaklık" />
+                    <Metric label="Calmar" value={fmt(m.calmar ?? null)} sub="CAGR ÷ max drawdown" />
+                    <Metric label="Ulcer index" value={m.ulcer_index_pct == null ? "—" : `%${fmt(m.ulcer_index_pct, 2)}`} sub="drawdown derinliği × süresi" />
+                    <Metric label="VaR 95 (bar)" value={m.var_95_bar_pct == null ? "—" : pct(m.var_95_bar_pct)} cls="neg" sub={`CVaR ${m.cvar_95_bar_pct == null ? "—" : pct(m.cvar_95_bar_pct)}`} />
+                    <Metric label="Tail ratio" value={fmt(m.tail_ratio ?? null)} cls={m.tail_ratio == null ? "" : tone(m.tail_ratio - 1)} sub=">1: kazanç kuyruğu kalın" />
+                    <Metric label="Omega" value={fmt(m.omega ?? null)} cls={m.omega == null ? "" : tone(m.omega - 1)} sub="Σ kazanç ÷ Σ kayıp (bar)" />
+                  </div>
+                </div>
+              )}
+
               {result.risk && <RiskReport info={result.risk} />}
               {result.monte_carlo && <MonteCarloPanel mc={result.monte_carlo} />}
 

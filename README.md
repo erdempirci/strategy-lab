@@ -47,7 +47,7 @@ cd web && npm install && API_URL=http://127.0.0.1:8000 npm run dev
 ```
 Open http://localhost:3000. Or run both with `cp .env.example .env && docker compose up`.
 
-Tests: `cd api && pytest` · `cd web && npm run build`
+Tests: `cd api && pip install -e ".[dev,reference]" && pytest` · `cd web && npm run build`
 
 ## Strategies (`api/app/strategies/`)
 | id | Strategy | Logic (long/flat) |
@@ -106,6 +106,25 @@ DSL which is validated before anything runs — **no generated code is ever exec
 
 Endpoints: `GET /api/ai/status`, `POST /api/ai/strategy`, `POST /api/custom/validate`,
 `POST /api/custom/backtest`.
+
+## Risk metrics and reference checks
+Every backtest also reports a return-distribution block (`api/app/services/risk_metrics.py`):
+CAGR, annual volatility, Sortino, Calmar, Ulcer index, parametric VaR/CVaR 95 (per bar),
+tail ratio and Omega. Formulas follow [ranaroussi/quantstats](https://github.com/ranaroussi/quantstats)
+(Apache-2.0) and are implemented with numpy only; `tests/test_risk_metrics.py` checks each one
+against quantstats.
+
+Indicators (EMA, Wilder RSI/ATR/ADX, MACD, Bollinger) are cross-checked against
+[bukosabino/ta](https://github.com/bukosabino/ta) (MIT) in `tests/test_indicators_reference.py`.
+Both reference libraries are test-only: `pip install -e ".[dev,reference]"` (CI does this);
+without them those tests are skipped.
+
+## Design
+The dashboard follows the Binance design language from
+[VoltAgent/awesome-design-md](https://github.com/VoltAgent/awesome-design-md) (`binance/DESIGN.md`):
+near-black trading canvas, Binance yellow reserved for primary actions and focus, green/red only
+for price direction, numbers in a monospaced face. IBM Plex Sans/Mono stand in for Binance's
+proprietary fonts (BinancePlex is derived from IBM Plex).
 
 ## Risk engine (`api/app/services/risk_engine.py`)
 Send `"risk": {...}` with any backtest / compare request (the dashboard does by default):

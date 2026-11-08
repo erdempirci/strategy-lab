@@ -1,21 +1,31 @@
+/* Strategy Lab — Binance tasarım dili (VoltAgent/awesome-design-md → design-md/binance/DESIGN.md, MIT).
+   Koyu işlem paneli zemini, tek vurgu rengi Binance sarısı (yalnızca birincil eylem ve odak),
+   yükseliş/düşüş yeşil/kırmızı yalnızca yön bilgisi için, rakamlar mono yazıyla.
+   Binance'in kendi yazı tipleri yerine açık kaynak eşdeğeri IBM Plex (BinancePlex, Plex'ten türetilmiştir). */
 :root {
   color-scheme: dark;
-  --bg: #0b0f17;
-  --panel: #111723;
-  --panel-2: #161e2d;
-  --line: #1f2a3c;
-  --text: #e6ebf2;
-  --muted: #8b98ad;
-  --accent: #6aa8ff;
-  --pos: #2fbf8f;
-  --neg: #e5566b;
-  --warn: #f2b84b;
-  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --bg: #0b0e11;
+  --panel: #181a20;
+  --panel-2: #1e2329;
+  --panel-3: #2b3139;
+  --line: #2b3139;
+  --text: #eaecef;
+  --muted: #929aa5;
+  --muted-2: #707a8a;
+  --accent: #fcd535;
+  --accent-active: #f0b90b;
+  --on-accent: #181a20;
+  --pos: #0ecb81;
+  --neg: #f6465d;
+  --warn: #f0b90b;
+  --info: #3b82f6;
+  --sans: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 * { box-sizing: border-box; }
 html, body { margin: 0; background: var(--bg); color: var(--text); }
-body { font: 14px/1.45 Inter, system-ui, -apple-system, sans-serif; -webkit-font-smoothing: antialiased; }
+body { font: 14px/1.45 var(--sans); -webkit-font-smoothing: antialiased; }
 
 .shell { max-width: 1440px; margin: 0 auto; padding: 20px 16px 48px; }
 .top { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
@@ -44,8 +54,8 @@ select:disabled { opacity: 0.8; }
 .hint { font-size: 12px; color: var(--muted); margin: -4px 0 0; }
 
 button {
-  background: var(--accent); color: #07101f; border: 0; border-radius: 8px; padding: 11px 14px;
-  font: 600 14px Inter, sans-serif; cursor: pointer;
+  background: var(--accent); color: var(--on-accent); border: 0; border-radius: 6px; padding: 11px 14px;
+  font: 600 14px var(--sans); cursor: pointer;
 }
 button:disabled { opacity: 0.6; cursor: progress; }
 button.ghost { background: transparent; color: var(--accent); border: 1px solid var(--line); margin-top: 12px; width: 100%; }
@@ -53,7 +63,7 @@ button.ghost { background: transparent; color: var(--accent); border: 1px solid 
 
 .empty p { max-width: 560px; }
 .banner { border: 1px solid var(--line); background: var(--panel); border-radius: 10px; padding: 10px 14px; font: 12px var(--mono); color: var(--muted); }
-.banner.warn { border-color: rgba(242,184,75,0.4); background: rgba(242,184,75,0.08); color: var(--warn); font-family: Inter, sans-serif; font-size: 13px; }
+.banner.warn { border-color: rgba(240,185,11,0.4); background: rgba(240,185,11,0.08); color: var(--warn); font-family: var(--sans); font-size: 13px; }
 .banner b { color: var(--warn); font-weight: 500; }
 
 .metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
@@ -74,16 +84,16 @@ button.ghost { background: transparent; color: var(--accent); border: 1px solid 
 .months { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 6px; }
 .month { border-radius: 7px; padding: 8px; background: var(--panel-2); display: grid; gap: 2px; font: 12px var(--mono); }
 .month span { color: var(--muted); font-size: 11px; }
-.month.pos { background: rgba(47,191,143,0.12); }
-.month.neg { background: rgba(229,86,107,0.12); }
+.month.pos { background: rgba(14,203,129,0.12); }
+.month.neg { background: rgba(246,70,93,0.12); }
 
 .table-wrap { overflow-x: auto; margin: 0 -16px; padding: 0 16px; }
 table { width: 100%; border-collapse: collapse; font: 12px var(--mono); }
 th { text-align: left; color: var(--muted); font-weight: 500; padding: 8px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
-td { padding: 7px 10px; border-bottom: 1px solid rgba(31,42,60,0.6); white-space: nowrap; }
+td { padding: 7px 10px; border-bottom: 1px solid rgba(43,49,57,0.7); white-space: nowrap; }
 .r { text-align: right; }
 tbody tr:hover { background: var(--panel-2); }
-tr.active { background: rgba(106,168,255,0.08); }
+tr.active { background: rgba(252,213,53,0.06); }
 
 
 .tag { font: 11px var(--mono); color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 3px 9px; }
@@ -110,7 +120,7 @@ tr.disabled td { color: var(--muted); }
 .tabs button.on { background: var(--panel); color: var(--text); box-shadow: 0 0 0 1px var(--line); }
 textarea {
   width: 100%; background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
-  border-radius: 7px; padding: 10px; font: 13px/1.5 Inter, sans-serif; resize: vertical; outline: none;
+  border-radius: 7px; padding: 10px; font: 13px/1.5 var(--sans); resize: vertical; outline: none;
 }
 textarea:focus { border-color: var(--accent); }
 .json textarea { font: 12px/1.5 var(--mono); margin: 10px 0; }
@@ -132,9 +142,9 @@ textarea:focus { border-color: var(--accent); }
 
 .toggle { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 13px; }
 .toggle input { width: auto; }
-.tag.good { color: var(--pos); border-color: rgba(47,191,143,0.4); }
-.tag.bad { color: var(--neg); border-color: rgba(229,86,107,0.4); }
-.tag.warn { color: var(--warn); border-color: rgba(242,184,75,0.4); }
+.tag.good { color: var(--pos); border-color: rgba(14,203,129,0.4); }
+.tag.bad { color: var(--neg); border-color: rgba(246,70,93,0.4); }
+.tag.warn { color: var(--warn); border-color: rgba(240,185,11,0.4); }
 .checks { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
 .check { display: flex; gap: 10px; background: var(--panel-2); border-radius: 8px; padding: 10px 12px; }
 .check > div { display: grid; gap: 2px; min-width: 0; }
@@ -151,7 +161,7 @@ textarea:focus { border-color: var(--accent); }
 .step { background: var(--panel-2); border-radius: 8px; padding: 10px; display: grid; gap: 2px; text-align: center; }
 .step b { font: 500 20px var(--mono); }
 .step span { font-size: 11px; color: var(--muted); }
-.step.strong { box-shadow: inset 0 0 0 1px rgba(47,191,143,0.5); }
+.step.strong { box-shadow: inset 0 0 0 1px rgba(14,203,129,0.5); }
 .step.strong b { color: var(--pos); }
 .segments { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 8px; }
 .segment { background: var(--panel-2); border-radius: 8px; padding: 10px 12px; display: grid; gap: 2px; }
@@ -179,3 +189,24 @@ button.link:disabled { opacity: 0.5; }
 .mc-hist i { flex: 1; min-width: 2px; border-radius: 2px 2px 0 0; background: var(--pos); opacity: 0.75; }
 .mc-hist i.neg { background: var(--neg); }
 .mc-axis { display: flex; justify-content: space-between; font: 11px var(--mono); color: var(--muted); }
+
+/* ── Binance katmanı ── */
+button:hover:not(:disabled) { background: var(--accent-active); }
+button.ghost:hover:not(:disabled), button.link:hover:not(:disabled), .tabs button:hover:not(:disabled), .saved .x:hover { background: transparent; }
+button.ghost { color: var(--text); border-color: var(--panel-3); }
+button.ghost:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+button.link, .json summary { color: var(--text); text-decoration: underline; text-decoration-color: var(--accent); text-underline-offset: 3px; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.panel, .metric, .banner { border-radius: 8px; }
+.metric { background: var(--panel-2); border-color: transparent; }
+.metric b, .step b { font-weight: 500; }
+h1 { font-weight: 700; letter-spacing: -0.01em; }
+h2 { color: var(--muted); letter-spacing: 0.04em; }
+.tabs { background: transparent; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; padding: 0; gap: 0; }
+.tabs button { border-radius: 0; font-weight: 500; }
+.tabs button.on { background: transparent; color: var(--text); box-shadow: inset 0 -2px 0 var(--accent); }
+input, select, textarea { background: var(--panel-2); border-color: var(--panel-3); border-radius: 6px; }
+input:focus, select:focus, textarea:focus { border-color: var(--accent); }
+.chip { border-radius: 4px; }
+tr.active { box-shadow: inset 2px 0 0 var(--accent); }
+.step.strong { box-shadow: inset 0 0 0 1px rgba(14,203,129,0.5); }

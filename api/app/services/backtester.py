@@ -18,6 +18,7 @@ import math
 import numpy as np
 import pandas as pd
 
+from app.services.risk_metrics import risk_metrics
 from app.services.timeframes import periods_per_year
 
 REQUIRED_COLUMNS = {"timestamp", "open", "high", "low", "close"}
@@ -213,6 +214,7 @@ def summarize(times: pd.Series, equity: np.ndarray, trades: list[dict], total_fe
             "exposure_pct": round(bars_in_market / n * 100, 2),
             "sharpe_annualized": round(sharpe, 4),
             "annualization_periods": round(ann, 2),
+            **risk_metrics(bar_returns.to_numpy()[1:], ann),
         },
         "trades": trades,
         "monthly_returns_pct": [
