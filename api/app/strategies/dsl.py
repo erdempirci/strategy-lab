@@ -26,6 +26,8 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from app.strategies.library import ema, rsi
 
 PRICE_FIELDS = {"open", "high", "low", "close", "volume"}
+# Candle anatomy, derived from OHLC of the same bar.
+CANDLE_FIELDS = {"body", "upper_wick", "lower_wick", "range"}
 TIME_FIELDS = {"hour", "weekday"}
 OUTPUTS = {"macd": {"line", "signal", "hist"}, "bb": {"upper", "middle", "lower"}}
 OPERAND_RE = re.compile(r"^(?P<name>[a-z][a-z0-9_]*(?:\.[a-z]+)?)(?:\[(?P<shift>\d{1,3})\])?$")
@@ -57,7 +59,7 @@ class Indicator(BaseModel):
     @field_validator("id")
     @classmethod
     def _not_reserved(cls, v: str) -> str:
-        if v in PRICE_FIELDS | TIME_FIELDS:
+        if v in PRICE_FIELDS | TIME_FIELDS | CANDLE_FIELDS:
             raise ValueError(f"'{v}' is a reserved name")
         return v
 
@@ -79,6 +81,8 @@ class Condition(BaseModel):
     left: str
     op: Op
     right: str
+    # Compare against right × right_mult, e.g. lower_wick > body × 2.
+    right_mult: float = Field(default=1.0, gt=0, le=1000)
 
     @field_validator("left", "right", mode="before")
     @classmethod
@@ -99,6 +103,11 @@ class StrategySpec(BaseModel):
     stop_loss_pct: float | None = Field(default=None, gt=0, le=50)
     take_profit_pct: float | None = Field(default=None, gt=0, le=500)
     max_bars_in_trade: int | None = Field(default=None, ge=1, le=5000)
+    # Structural stop: price level read at the SIGNAL bar's close, e.g. "low" (the signal
+    # candle's low = its wick), "low[1]", or an indicator such as a 10-bar lowest low.
+    stop_at: str | None = Field(default=None, max_length=40)
+    # Target as a multiple of the actual risk (entry − stop), e.g. 1.5 for 1:1.5.
+    take_profit_rr: float | None = Field(default=None, gt=0, le=20)
 
     @model_validator(mode="after")
     def _check_references(self) -> StrategySpec:
@@ -115,7 +124,18 @@ class StrategySpec(BaseModel):
             types[ind.id] = ind.type
         if not (self.entry.all or self.entry.any):
             raise ValueError("entry needs at least one condition")
-        has_exit = (self.exit.all or self.exit.any or self.stop_loss_pct
+        if self.stop_at is not None:
+            self.stop_at = self.stop_at.strip().lower()
+            parsed = _parse_operand(self.stop_at, types)
+            if isinstance(parsed, float):
+                raise ValueError("stop_at must be a price level (e.g. 'low'), not a number")
+            if self.stop_loss_pct:
+                raise ValueError("use either stop_at or stop_loss_pct, not both")
+        if self.take_profit_rr and self.take_profit_pct:
+            raise ValueError("use either take_profit_rr or take_profit_pct, not both")
+        if self.take_profit_rr and not (self.stop_at or self.stop_loss_pct):
+            raise ValueError("take_profit_rr needs a stop (stop_at or stop_loss_pct)")
+        has_exit = (self.exit.all or self.exit.any or self.stop_loss_pct or self.stop_at
                     or self.take_profit_pct or self.max_bars_in_trade)
         if not has_exit:
             raise ValueError("add at least one exit: exit condition, stop, target or max bars")
@@ -133,8 +153,11 @@ class StrategySpec(BaseModel):
             chain[i.id] = i.warmup() + (chain[i.of.split(".")[0]] if i.of else 0)
         base = max(chain.values(), default=0)
         shifts = []
-        for c in self.conditions():
-            for side in (c.left, c.right):
+        sides = [(c.left, c.right) for c in self.conditions()]
+        if self.stop_at:
+            sides.append((self.stop_at, "0"))
+        for pair in sides:
+            for side in pair:
                 m = OPERAND_RE.match(side)
                 if m and m.group("shift"):
                     shifts.append(int(m.group("shift")))
@@ -151,7 +174,7 @@ def _parse_operand(text: str, types: dict[str, str]) -> tuple[str, str | None, i
     name, shift = m.group("name"), int(m.group("shift") or 0)
     base, _, output = name.partition(".")
     output = output or None
-    if base in PRICE_FIELDS | TIME_FIELDS:
+    if base in PRICE_FIELDS | TIME_FIELDS | CANDLE_FIELDS:
         if output:
             raise ValueError(f"{text!r}: '{base}' has no outputs")
         return base, None, shift
@@ -236,6 +259,11 @@ class _Context:
         name, output, shift = parsed
         if name in PRICE_FIELDS:
             s = self.frame[name].astype(float)
+        elif name in CANDLE_FIELDS:
+            f = self.frame
+            top, bottom = f[["open", "close"]].max(axis=1), f[["open", "close"]].min(axis=1)
+            s = {"body": top - bottom, "upper_wick": f["high"] - top,
+                 "lower_wick": bottom - f["low"], "range": f["high"] - f["low"]}[name].astype(float)
         elif name in TIME_FIELDS:
             s = self.time[name]
         else:
@@ -244,7 +272,7 @@ class _Context:
 
     def condition(self, c: Condition) -> tuple[pd.Series, pd.Series]:
         """(boolean result, validity mask)."""
-        a, b = self.operand(c.left), self.operand(c.right)
+        a, b = self.operand(c.left), self.operand(c.right) * c.right_mult
         valid = a.notna() & b.notna()
         if c.op in ("crosses_above", "crosses_below"):
             pa, pb = a.shift(1), b.shift(1)
@@ -286,27 +314,48 @@ def custom_signal(spec: StrategySpec, frame: pd.DataFrame, apply_stops: bool = T
     closes = ctx.frame["close"].to_numpy(float)
     sl = spec.stop_loss_pct / 100 if spec.stop_loss_pct and apply_stops else None
     tp = spec.take_profit_pct / 100 if spec.take_profit_pct and apply_stops else None
+    levels = stop_levels(spec, ctx.frame, ctx) if apply_stops else None
+    rr = spec.take_profit_rr if apply_stops else None
 
     out = np.full(len(frame), np.nan)
     pos, entry_bar, entry_px = 0.0, -1, np.nan
+    stop_px = tgt_px = np.nan
+    pending = np.nan
     for i in range(len(frame)):
         if pos == 1.0 and i == entry_bar:
             entry_px = opens[i]          # actual fill: this bar's open, known now
+            if levels is not None:
+                stop_px = pending
+            elif sl is not None:
+                stop_px = entry_px * (1 - sl)
+            if tp is not None:
+                tgt_px = entry_px * (1 + tp)
+            elif rr is not None and np.isfinite(stop_px) and stop_px < entry_px:
+                tgt_px = entry_px + rr * (entry_px - stop_px)
         if pos == 0.0 and (i < warm or not valid[i]):
             continue
         if pos == 0.0:
-            if i >= warm and valid[i] and enter[i]:
+            if i >= warm and valid[i] and enter[i] and (levels is None or np.isfinite(levels[i])):
                 pos, entry_bar = 1.0, i + 1
+                pending = levels[i] if levels is not None else np.nan
         else:
             in_trade = i >= entry_bar
-            hit_sl = in_trade and sl is not None and closes[i] <= entry_px * (1 - sl)
-            hit_tp = in_trade and tp is not None and closes[i] >= entry_px * (1 + tp)
+            hit_sl = in_trade and np.isfinite(stop_px) and closes[i] <= stop_px
+            hit_tp = in_trade and np.isfinite(tgt_px) and closes[i] >= tgt_px
             timed = (in_trade and spec.max_bars_in_trade is not None
                      and i - entry_bar + 1 >= spec.max_bars_in_trade)
             if (valid[i] and exit_[i]) or hit_sl or hit_tp or timed:
-                pos, entry_px = 0.0, np.nan
+                pos, entry_px, stop_px, tgt_px = 0.0, np.nan, np.nan, np.nan
         out[i] = pos
     return pd.Series(out)
+
+
+def stop_levels(spec: StrategySpec, frame: pd.DataFrame, ctx: _Context | None = None):
+    """Per-bar structural stop price (None if the spec has no stop_at)."""
+    if not spec.stop_at:
+        return None
+    ctx = ctx or _Context(spec, frame)
+    return ctx.operand(spec.stop_at).to_numpy(float)
 
 
 def overlay_lines(spec: StrategySpec, frame: pd.DataFrame):
@@ -332,7 +381,9 @@ _IND_TR = {"sma": "SMA", "ema": "EMA", "rsi": "RSI", "macd": "MACD", "bb": "Boll
            "atr": "ATR", "highest": "En yüksek", "lowest": "En düşük", "roc": "Değişim %",
            "normalize": "Normalize (0–1)"}
 _FIELD_TR = {"open": "açılış", "high": "yüksek", "low": "düşük", "close": "kapanış",
-             "volume": "hacim", "hour": "saat (UTC)", "weekday": "haftanın günü (0=Pzt)"}
+             "volume": "hacim", "hour": "saat (UTC)", "weekday": "haftanın günü (0=Pzt)",
+             "body": "gövde", "upper_wick": "üst fitil", "lower_wick": "alt fitil",
+             "range": "mum boyu"}
 
 
 def _operand_tr(text: str) -> str:
@@ -356,7 +407,10 @@ def describe(spec: StrategySpec) -> dict:
         return f"{i.id} = {_IND_TR[i.type]}({i.period}) — {target}"
 
     def cond_tr(c: Condition) -> str:
-        return f"{_operand_tr(c.left)} {_OP_TR[c.op]} {_operand_tr(c.right)}"
+        right = _operand_tr(c.right)
+        if c.right_mult != 1:
+            right = f"{right} × {c.right_mult:g}"
+        return f"{_operand_tr(c.left)} {_OP_TR[c.op]} {right}"
 
     def rules_tr(r: Rules) -> list[str]:
         lines = [cond_tr(c) for c in r.all]
@@ -367,8 +421,12 @@ def describe(spec: StrategySpec) -> dict:
     risk = []
     if spec.stop_loss_pct:
         risk.append(f"Stop: giriş fiyatının %{spec.stop_loss_pct:g} altında kapanış")
+    if spec.stop_at:
+        risk.append(f"Stop: sinyal mumundaki '{_operand_tr(spec.stop_at)}' seviyesi")
     if spec.take_profit_pct:
         risk.append(f"Hedef: giriş fiyatının %{spec.take_profit_pct:g} üstünde kapanış")
+    if spec.take_profit_rr:
+        risk.append(f"Hedef: riskin {spec.take_profit_rr:g} katı (1:{spec.take_profit_rr:g} R:R)")
     if spec.max_bars_in_trade:
         risk.append(f"En fazla {spec.max_bars_in_trade} bar pozisyonda kal")
     return {"indicators": [ind_tr(i) for i in spec.indicators], "entry": rules_tr(spec.entry),
