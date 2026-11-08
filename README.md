@@ -59,6 +59,12 @@ Tests: `cd api && pytest` · `cd web && npm run build`
 | `asia_breakout` | Asia Session Breakout | close above 00–03 UTC range, flat by 08 UTC |
 | `london_breakout` | London Session Breakout | close above 00–07 UTC range, flat by 16 UTC |
 
+**Video presets** (`api/app/strategies/presets.py`) — the six strategies from Quantified
+Strategies' *"6 RSI Trading Strategies Tested"*, transcribed rule by rule as DSL specs:
+`qs_rsi2`, `qs_rsi_drop`, `qs_triple_rsi`, `qs_normalized_rsi`, `qs_rsi_momentum`,
+`qs_rsi_pullback`. Their reference results are SPY, daily, no costs; Triple RSI's exit is not
+stated in the video (RSI(5) > 50 from the channel's published version is used).
+
 Every strategy is a pure function of bars `0..i` and is covered by a generic
 no-look-ahead test. Fibonacci 0.618 pullback and FVG + market structure need intrabar
 stop-loss / take-profit and come with the SL/TP engine.
@@ -80,7 +86,9 @@ DSL which is validated before anything runs — **no generated code is ever exec
   "stop_loss_pct": 2, "take_profit_pct": 6, "max_bars_in_trade": 48
 }
 ```
-- Indicators: `sma ema rsi roc highest lowest atr macd(.line/.signal/.hist) bb(.upper/.middle/.lower)`
+- Indicators: `sma ema rsi roc highest lowest atr normalize macd(.line/.signal/.hist) bb(.upper/.middle/.lower)`
+- `"of": "<earlier indicator>"` applies sma/ema/highest/lowest/normalize to another indicator
+  (e.g. highest RSI(14) of 100 bars)
 - Operands: `open high low close volume hour weekday`, indicator ids, numbers, look-back `close[1]`
 - Operators: `> < >= <= crosses_above crosses_below`; `all` = AND, `any` = OR
 - Stops/targets are close-based vs. the actual fill price.
@@ -181,6 +189,9 @@ market calendars.
 - **Binance** spot, public klines, closed candles only. Default host
   `data-api.binance.vision` (`api.binance.com` returns 451 for US IPs, incl. Vercel).
 - **MT5** CSV exports → UTC with the broker's server offset, historical spread kept.
+- **Stocks / ETFs** daily on the Yahoo source (`data_source: "yahoo"` with any symbol other
+  than a named future, e.g. SPY, QQQ): dividend/split-adjusted, Stooq fallback; today's bar
+  dropped until the US close. Sharpe uses 252 sessions/year; weekends are not gaps.
 - **Demo** deterministic synthetic data — clearly flagged, never real performance.
 
 ## Roadmap

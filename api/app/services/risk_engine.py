@@ -60,6 +60,7 @@ def run_risk_backtest(
     stop_pct_override: float | None = None,
     take_profit_pct_override: float | None = None,
     return_daily: bool = False,
+    trading_minutes_per_year: int = 365 * 24 * 60,
 ) -> dict:
     if initial_capital <= 0:
         raise ValueError("initial_capital must be positive")
@@ -196,7 +197,7 @@ def run_risk_backtest(
     daily.append((str(day), day_start, last_equity))
 
     result = summarize(times, equity, trades, total_fees, bars_in_market, initial_capital,
-                       timeframe)
+                       timeframe, trading_minutes_per_year)
     day_ret = np.array([e / s - 1 for _, s, e in daily if s > 0])
     worst = int(np.argmin(day_ret)) if len(day_ret) else None
     rs = np.array([t["r_multiple"] for t in trades if t["r_multiple"] is not None])

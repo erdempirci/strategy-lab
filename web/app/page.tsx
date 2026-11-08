@@ -198,7 +198,12 @@ export default function Home() {
           <label>Strateji
             <select value={strategyId} onChange={(e) => setStrategyId(e.target.value)}>
               {strategies.length === 0 && <option>Yükleniyor…</option>}
-              {strategies.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+              <optgroup label="Hazır stratejiler">
+                {strategies.filter((s) => s.category !== "video").map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </optgroup>
+              <optgroup label="Video: 6 RSI stratejisi (Quantified Strategies)">
+                {strategies.filter((s) => s.category === "video").map((s) => <option key={s.id} value={s.id}>{s.name.replace(" (QS video)", "")}</option>)}
+              </optgroup>
             </select>
           </label>
           {spec && <p className="hint">{spec.description}</p>}
@@ -213,7 +218,10 @@ export default function Home() {
               ))}
             </div>
           )}
-          {spec && <button type="button" className="link" onClick={resetParams}>Varsayılanlara dön</button>}
+          {spec && spec.params.length > 0 && <button type="button" className="link" onClick={resetParams}>Varsayılanlara dön</button>}
+          {spec?.category === "video" && market.timeframe !== "1d" && (
+            <p className="hint warn-text">Bu strateji günlük grafik için tasarlandı; zaman dilimini 1d yap.</p>
+          )}
           </>)}
 
           <h2>Piyasa</h2>

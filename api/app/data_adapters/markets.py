@@ -1,6 +1,7 @@
 """Non-crypto markets the app knows by name, and how to load any symbol.
 
-Crypto pairs (BTC/USDT …) go to Binance. Named index futures go to Yahoo.
+Crypto pairs (BTC/USDT …) go to Binance. Named futures go to Yahoo; any other symbol on
+the Yahoo source is treated as a stock / ETF (daily, adjusted).
 """
 
 from __future__ import annotations
@@ -51,5 +52,8 @@ def load_ohlcv(source: str, symbol: str, timeframe: str, bars: int) -> tuple[pd.
     if m is not None:
         return fetch_yahoo_ohlcv(m.ticker, timeframe, bars), f"yahoo_{m.symbol.lower()}_futures"
     if source == "yahoo":
-        raise ValueError(f"{symbol}: Yahoo kaynağı için US100 veya US500 yazın")
+        # Any other symbol on Yahoo = stock / ETF, daily, dividend-adjusted (e.g. SPY, QQQ).
+        from app.data_adapters.stocks import fetch_stock_daily
+
+        return fetch_stock_daily(symbol, timeframe, bars)
     return fetch_binance_ohlcv(symbol, timeframe, bars), "binance_spot"

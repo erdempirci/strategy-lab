@@ -59,7 +59,8 @@ def test_list_strategies():
     items = client.get("/api/strategies").json()["strategies"]
     ids = {s["id"] for s in items}
     assert {"ema_crossover", "rsi_reversal", "turtle", "london_breakout"} <= ids
-    assert all(s["params"] for s in items)
+    assert all(s["params"] for s in items if s["category"] != "video")
+    assert sum(s["category"] == "video" for s in items) == 6
 
 
 def test_every_strategy_runs_through_api():

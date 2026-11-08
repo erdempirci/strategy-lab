@@ -79,6 +79,11 @@ DSL facts:
   atr: period
   macd: fast, slow, signal → reference as "<id>.line", "<id>.signal", "<id>.hist"
   bb (Bollinger): period, std → "<id>.upper", "<id>.middle", "<id>.lower"
+  normalize: period → (x − min_period) / (max_period − min_period), 0..1
+  "of": sma/ema/highest/lowest/normalize can be applied to an EARLIER indicator instead of a
+  price, e.g. {"id":"rsi_hi","type":"highest","period":100,"of":"rsi14"} = highest RSI(14)
+  of the last 100 bars; {"id":"nrsi","type":"normalize","period":50,"of":"rsi2"}.
+- "Declined N days in a row" = x < x[1], x[1] < x[2], ... ; "QS exit" = close > high[1].
 - entry/exit: {"all": [conditions], "any": [conditions]} → all must hold AND (if any is given)
   at least one of any. Condition: {"left": operand, "op": one of > < >= <= crosses_above
   crosses_below, "right": operand}.
