@@ -84,7 +84,39 @@ PRESETS: list[dict] = [
 ]
 
 
-def _strategy(p: dict) -> Strategy:
+# Claude-designed intraday presets. Unlike the QS videos these carry their own stop/target
+# (structural stop + R:R target), so they run with stops in both engines.
+TREND_PULLBACK_SIDE = lambda gt, lt, cross, lvl: [
+    _c("close", gt, "ema200"), _c("ema21", gt, "ema200"), _c(lvl, lt + "=", "ema21"),
+    {"left": "rsi14", "op": cross, "right": "50"}, _c("close", gt, "ema21"),
+    _c("adx14", ">", 20), _c("hour", ">=", 7), _c("hour", "<=", 16),
+]
+FRIDAY_CLOSE = {"all": [_c("weekday", ">=", 4), _c("hour", ">=", 20)]}
+
+CLAUDE_PRESETS: list[dict] = [
+    {
+        "id": "gold_trend_pullback", "name": "Altın Trend-Pullback 1:1.5",
+        "note": "Trend yönünde geri çekilme: kapanış ve EMA21 EMA200'ün üstünde, son 5 mumda fiyat "
+                "EMA21'e değmiş, RSI(14) 50'yi yukarı keser, ADX > 20, 07–16 UTC (Londra+NY) → al. "
+                "Short tam tersi. Stop: son 5 mumun en düşüğü (short: en yükseği), hedef riskin "
+                "1,5 katı. Cuma 20 UTC sonrası pozisyon kapanır. Başa baş için ~%40 isabet yeter. "
+                "Önerilen: XAUUSD veya US100, 1h. Risk kurallarıyla (işlem başı %0,5) test et.",
+        "spec": {"indicators": [{"id": "ema21", "type": "ema", "period": 21},
+                                {"id": "ema200", "type": "ema", "period": 200},
+                                {"id": "rsi14", "type": "rsi", "period": 14},
+                                {"id": "adx14", "type": "adx", "period": 14},
+                                {"id": "lo5", "type": "lowest", "period": 5},
+                                {"id": "hi5", "type": "highest", "period": 5}],
+                 "entry": {"all": TREND_PULLBACK_SIDE(">", "<", "crosses_above", "lo5")},
+                 "short_entry": {"all": TREND_PULLBACK_SIDE("<", ">", "crosses_below", "hi5")},
+                 "exit": FRIDAY_CLOSE, "short_exit": FRIDAY_CLOSE,
+                 "stop_at": "lo5", "short_stop_at": "hi5", "take_profit_rr": 1.5},
+    },
+]
+
+
+def _strategy(p: dict, category: str = "video", suffix: str = " (QS video)",
+              hint: str = " En iyi günlük (1d) grafikte.") -> Strategy:
     spec = StrategySpec.model_validate({"name": p["name"], **p["spec"]})
 
     def signal(frame):
@@ -93,11 +125,12 @@ def _strategy(p: dict) -> Strategy:
     def overlays(frame, **_):
         return [Overlay(o.name, o.values, None) for o in overlay_lines(spec, frame)]
 
-    return Strategy(p["id"], f"{p['name']} (QS video)", p["note"] + " En iyi günlük (1d) grafikte.",
+    return Strategy(p["id"], f"{p['name']}{suffix}", p["note"] + hint,
                     (), signal, warmup=lambda _p: spec.warmup(), overlays=overlays,
-                    category="video")
+                    category=category)
 
 
 PRESET_STRATEGIES = {p["id"]: _strategy(p) for p in PRESETS}
+PRESET_STRATEGIES.update({p["id"]: _strategy(p, "trend", "", "") for p in CLAUDE_PRESETS})
 PRESET_SPECS = {p["id"]: StrategySpec.model_validate({"name": p["name"], **p["spec"]})
-                for p in PRESETS}
+                for p in PRESETS + CLAUDE_PRESETS}

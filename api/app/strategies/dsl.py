@@ -36,8 +36,8 @@ NUMBER_RE = re.compile(r"^-?\d+(\.\d+)?$")
 ID_RE = r"^[a-z][a-z0-9_]{0,23}$"
 MAX_PERIOD = 500
 
-IndicatorType = Literal["sma", "ema", "rsi", "macd", "bb", "atr", "highest", "lowest", "roc",
-                        "normalize"]
+IndicatorType = Literal["sma", "ema", "rsi", "macd", "bb", "atr", "adx", "highest", "lowest",
+                        "roc", "normalize"]
 OF_TYPES = {"sma", "ema", "highest", "lowest", "normalize"}
 OF_RE = r"^[a-z][a-z0-9_]{0,23}(\.[a-z]+)?$"
 Op = Literal[">", "<", ">=", "<=", "crosses_above", "crosses_below"]
@@ -75,6 +75,8 @@ class Indicator(BaseModel):
     def warmup(self) -> int:
         if self.type == "macd":
             return self.slow + self.signal
+        if self.type == "adx":
+            return 2 * self.period + 1
         return self.period + 1
 
 
@@ -238,6 +240,25 @@ def _parse_operand(text: str, types: dict[str, str]) -> tuple[str, str | None, i
 
 
 # ---------------------------------------------------------------- evaluation
+def adx(frame: pd.DataFrame, period: int) -> pd.Series:
+    """Wilder's ADX (trend strength, 0-100; above ~20-25 = trending)."""
+    high, low, close = frame["high"], frame["low"], frame["close"]
+    up, down = high.diff(), -low.diff()
+    plus_dm = up.where((up > down) & (up > 0), 0.0)
+    minus_dm = down.where((down > up) & (down > 0), 0.0)
+    prev = close.shift(1)
+    tr = pd.concat([high - low, (high - prev).abs(), (low - prev).abs()], axis=1).max(axis=1)
+    alpha = 1 / period
+    atr_w = tr.ewm(alpha=alpha, adjust=False).mean()
+    plus_di = 100 * plus_dm.ewm(alpha=alpha, adjust=False).mean() / atr_w.where(atr_w > 0)
+    minus_di = 100 * minus_dm.ewm(alpha=alpha, adjust=False).mean() / atr_w.where(atr_w > 0)
+    total = plus_di + minus_di
+    dx = (100 * (plus_di - minus_di).abs() / total.where(total > 0)).fillna(0.0)
+    out = dx.ewm(alpha=alpha, adjust=False).mean()
+    out.iloc[: 2 * period] = np.nan
+    return out
+
+
 def _indicator_series(ind: Indicator, frame: pd.DataFrame,
                       done: dict[str, dict[str | None, pd.Series]] | None = None,
                       ) -> dict[str | None, pd.Series]:
@@ -276,6 +297,8 @@ def _indicator_series(ind: Indicator, frame: pd.DataFrame,
         out = tr.ewm(alpha=1 / ind.period, adjust=False).mean()
         out.iloc[: ind.period] = np.nan
         return {None: out}
+    if ind.type == "adx":
+        return {None: adx(frame, ind.period)}
     if ind.type == "macd":
         line = ema(src, ind.fast) - ema(src, ind.slow)
         sig = ema(line, ind.signal)
@@ -534,7 +557,7 @@ def overlay_lines(spec: StrategySpec, frame: pd.DataFrame):
 _OP_TR = {">": "büyüktür", "<": "küçüktür", ">=": "büyük veya eşit", "<=": "küçük veya eşit",
           "crosses_above": "yukarı keser", "crosses_below": "aşağı keser"}
 _IND_TR = {"sma": "SMA", "ema": "EMA", "rsi": "RSI", "macd": "MACD", "bb": "Bollinger",
-           "atr": "ATR", "highest": "En yüksek", "lowest": "En düşük", "roc": "Değişim %",
+           "atr": "ATR", "adx": "ADX", "highest": "En yüksek", "lowest": "En düşük", "roc": "Değişim %",
            "normalize": "Normalize (0–1)"}
 _FIELD_TR = {"open": "açılış", "high": "yüksek", "low": "düşük", "close": "kapanış",
              "volume": "hacim", "hour": "saat (UTC)", "weekday": "haftanın günü (0=Pzt)",
@@ -558,8 +581,8 @@ def describe(spec: StrategySpec) -> dict:
             return f"{i.id} = MACD({i.fast}, {i.slow}, {i.signal})"
         if i.type == "bb":
             return f"{i.id} = Bollinger({i.period}, {i.std:g}σ) — {_FIELD_TR[i.source]}"
-        if i.type == "atr":
-            return f"{i.id} = ATR({i.period})"
+        if i.type in ("atr", "adx"):
+            return f"{i.id} = {i.type.upper()}({i.period})"
         target = i.of if i.of else _FIELD_TR[i.source]
         return f"{i.id} = {_IND_TR[i.type]}({i.period}) — {target}"
 

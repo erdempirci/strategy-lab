@@ -40,6 +40,7 @@ from app.strategies.dsl import (
     stop_levels,
     strategy_events,
 )
+from app.strategies.presets import PRESET_SPECS
 
 ENGINE_VERSION = "0.8.0"
 
@@ -122,6 +123,16 @@ def _run(strategy_id: str, raw_params: dict, frame, req) -> tuple[dict, dict]:
     needed = max(100, 3 * spec.warmup(params))
     if len(frame) < needed:
         raise ValueError(f"{spec.name} needs at least {needed} bars with these parameters")
+    dsl = PRESET_SPECS.get(strategy_id)
+    if req.risk is not None and dsl is not None and (dsl.stop_at or dsl.short_stop_at):
+        # Presets that carry their own structural stop / R:R target run like custom DSL
+        # strategies, so the risk engine uses THEIR stop and target, intrabar.
+        sig = custom_signal(dsl, frame, apply_stops=False)
+        events = strategy_events(dsl, frame)
+        return params, _execute(frame, sig, req, stop_pct=dsl.stop_loss_pct,
+                                take_profit_pct=dsl.take_profit_pct,
+                                levels=stop_levels(dsl, frame, pd.Series(events["entry"])),
+                                take_profit_rr=dsl.take_profit_rr, events=events)
     signal = build_signal(strategy_id, frame, params, req.timeframe)
     return params, _execute(frame, signal, req)
 

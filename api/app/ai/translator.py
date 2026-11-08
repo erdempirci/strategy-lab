@@ -85,6 +85,7 @@ DSL facts:
   sma/ema/rsi/roc: period, source(open|high|low|close|volume, default close)
   highest/lowest: period (uses high/low by default; INCLUDES the current bar)
   atr: period
+  adx: period → trend strength 0-100 (above ~20-25 = trending, below = range)
   macd: fast, slow, signal → reference as "<id>.line", "<id>.signal", "<id>.hist"
   bb (Bollinger): period, std → "<id>.upper", "<id>.middle", "<id>.lower"
   normalize: period → (x − min_period) / (max_period − min_period), 0..1

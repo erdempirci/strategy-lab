@@ -59,7 +59,9 @@ def test_list_strategies():
     items = client.get("/api/strategies").json()["strategies"]
     ids = {s["id"] for s in items}
     assert {"ema_crossover", "rsi_reversal", "turtle", "london_breakout"} <= ids
-    assert all(s["params"] for s in items if s["category"] != "video")
+    # DSL presets (video + gold_trend_pullback) have fixed rules, no tunable params
+    assert all(s["params"] for s in items
+               if s["category"] != "video" and s["id"] != "gold_trend_pullback")
     assert sum(s["category"] == "video" for s in items) == 6
 
 
