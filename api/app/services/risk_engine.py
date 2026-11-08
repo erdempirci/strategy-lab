@@ -64,6 +64,8 @@ def run_risk_backtest(
     stop_levels: np.ndarray | None = None,
     take_profit_rr_override: float | None = None,
     events: dict | None = None,
+    limit_levels: np.ndarray | None = None,
+    limit_valid_bars: int = 3,
 ) -> dict:
     """stop_levels: per-bar stop price decided at the signal bar's close (structural stop,
     e.g. the signal candle's low). Overrides the ATR/% stop when given.
@@ -75,6 +77,11 @@ def run_risk_backtest(
         exit_long  bool array, long exit rule true at that bar
         exit_short bool array, short exit rule true at that bar
         max_bars   int | None, close at the open after this many bars in the trade
+    limit_levels: per-bar LIMIT entry price decided at the signal bar (e.g. the middle of the
+    engulfing candle). Instead of entering at the next open, a limit order rests for
+    `limit_valid_bars` bars: a long fills when the low reaches it (at the open if the bar opens
+    through it), a short when the high reaches it. No slippage on limit fills. On the fill bar
+    the stop is checked (worst case) but the target is not, since intrabar order is unknown.
     """
     if initial_capital <= 0:
         raise ValueError("initial_capital must be positive")
@@ -112,6 +119,8 @@ def run_risk_backtest(
     day_breaches, blown_at, skipped_no_stop = 0, None, 0
     daily: list[tuple[str, float, float]] = []   # (date, start equity, end equity)
     last_equity = cash
+    pending: dict | None = None
+    orders = {"placed": 0, "filled": 0, "expired": 0, "cancelled": 0}
 
     def exit_trade(i: int, raw_px: float, reason: str, slipped: bool = True) -> None:
         nonlocal cash, qty, pos, total_fees
@@ -135,6 +144,42 @@ def run_risk_backtest(
             "exit_reason": reason, "forced_exit": reason == "end_of_data",
         })
         qty, pos = 0.0, None
+
+    def open_trade(i: int, side: int, fill: float, sig: int, limit_fill: bool = False) -> None:
+        """Open at `fill` with the stop decided at signal bar `sig`."""
+        nonlocal cash, qty, pos, total_fees, skipped_no_stop
+        if stop_levels is not None:
+            level = stop_levels[sig]
+            dist = side * (fill - level) if np.isfinite(level) else np.nan
+        elif use_pct:
+            dist = fill * stop_pct
+        else:
+            a = atr[sig]
+            dist = risk.stop_atr_mult * a if np.isfinite(a) else np.nan
+        if not np.isfinite(dist) or dist <= 0 or (side > 0 and dist >= fill):
+            skipped_no_stop += 1
+            return
+        stop = fill - side * dist
+        loss_per_unit = side * (fill - stop * (1 - side * slip)) + fee * (fill + stop)
+        equity_before = cash
+        q = equity_before * r / loss_per_unit
+        q = min(q, equity_before * risk.max_leverage / (fill * (1 + fee)))
+        if take_profit_pct_override is not None:
+            target = fill * (1 + side * take_profit_pct_override / 100)
+        elif take_profit_rr_override:
+            target = fill + side * take_profit_rr_override * dist
+        elif risk.take_profit_rr:
+            target = fill + side * risk.take_profit_rr * dist
+        else:
+            target = None
+        entry_fee = q * fill * fee
+        total_fees += entry_fee
+        cash -= side * q * fill + entry_fee
+        qty = side * q
+        pos = {"index": i, "time": times.iloc[i].isoformat(), "fill": fill, "stop": stop,
+               "target": target, "fee": entry_fee, "equity_before": equity_before,
+               "risk_amount": q * loss_per_unit, "notional": q * fill, "side": side,
+               "limit_fill": limit_fill}
 
     for i in range(n):
         if days[i] != day:
@@ -169,41 +214,37 @@ def run_risk_backtest(
                     and prev2 != prev_sig else 0)
         else:
             want = int(ev_in[i - 1]) if i >= 1 else 0
-        if pos is None and blown_at is None and not day_blocked and want != 0:
-            side = want
-            fill = o[i] * (1 + side * slip)
-            if stop_levels is not None:
-                level = stop_levels[i - 1]
-                dist = side * (fill - level) if np.isfinite(level) else np.nan
-            elif use_pct:
-                dist = fill * stop_pct
+        allowed = pos is None and blown_at is None and not day_blocked
+        if want != 0 and allowed:
+            limit = limit_levels[i - 1] if limit_levels is not None else np.nan
+            if np.isfinite(limit):
+                # Place / replace a limit order; it may fill from this bar on.
+                pending = {"side": want, "limit": limit, "sig": i - 1,
+                           "expires": i + limit_valid_bars - 1}
+                orders["placed"] += 1
             else:
-                a = atr[i - 1]
-                dist = risk.stop_atr_mult * a if np.isfinite(a) else np.nan
-            if not np.isfinite(dist) or dist <= 0 or (side > 0 and dist >= fill):
-                skipped_no_stop += 1
+                open_trade(i, want, o[i] * (1 + want * slip), i - 1)
+        elif want != 0 and pending is not None:
+            pending = None                      # blocked day / failed account: cancel
+            orders["cancelled"] += 1
+        if pending is not None and pos is None:
+            if not allowed:
+                pending = None
+                orders["cancelled"] += 1
             else:
-                stop = fill - side * dist
-                loss_per_unit = side * (fill - stop * (1 - side * slip)) + fee * (fill + stop)
-                equity_before = cash if qty == 0 else cash + qty * o[i]
-                risk_amount = equity_before * r
-                q = risk_amount / loss_per_unit
-                q = min(q, equity_before * risk.max_leverage / (fill * (1 + fee)))
-                if take_profit_pct_override is not None:
-                    target = fill * (1 + side * take_profit_pct_override / 100)
-                elif take_profit_rr_override:
-                    target = fill + side * take_profit_rr_override * dist
-                elif risk.take_profit_rr:
-                    target = fill + side * risk.take_profit_rr * dist
+                side, lim = pending["side"], pending["limit"]
+                fill = None
+                if side > 0:
+                    fill = o[i] if o[i] <= lim else (lim if lo[i] <= lim else None)
                 else:
-                    target = None
-                entry_fee = q * fill * fee
-                total_fees += entry_fee
-                cash -= side * q * fill + entry_fee
-                qty = side * q
-                pos = {"index": i, "time": times.iloc[i].isoformat(), "fill": fill, "stop": stop,
-                       "target": target, "fee": entry_fee, "equity_before": equity_before,
-                       "risk_amount": q * loss_per_unit, "notional": q * fill, "side": side}
+                    fill = o[i] if o[i] >= lim else (lim if h[i] >= lim else None)
+                if fill is not None:
+                    open_trade(i, side, fill, pending["sig"], limit_fill=True)
+                    orders["filled"] += 1
+                    pending = None
+                elif i >= pending["expires"]:
+                    pending = None
+                    orders["expired"] += 1
 
         # 3) intrabar protection: stop, daily limit, total floor. Longs lose as price falls,
         #    so the HIGHEST protective level is touched first; shorts: the LOWEST.
@@ -221,6 +262,8 @@ def run_risk_backtest(
                 level, reason = min(levels, key=lambda x: x[0])
                 hit, gap_px = h[i] >= level, max(o[i], level)
             tgt = pos["target"]
+            if pos.get("limit_fill") and pos["index"] == i:
+                tgt = None          # bar order unknown after a limit fill: no same-bar target
             if hit:
                 exit_trade(i, gap_px, reason)
                 if reason == "daily_limit":
@@ -274,6 +317,7 @@ def run_risk_backtest(
                          for k in ("signal", "time", "stop", "target", "daily_limit",
                                    "max_total_loss", "end_of_data")},
         "skipped_entries_no_stop": skipped_no_stop,
+        "limit_orders": orders if limit_levels is not None else None,
         "trading_days": len(daily),
     }
     if return_daily:

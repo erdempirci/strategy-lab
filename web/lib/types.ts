@@ -23,6 +23,7 @@ export interface RiskInfo {
   avg_monthly_return_pct: number;
   positive_months_pct: number;
   exit_reasons: Record<string, number>;
+  limit_orders?: { placed: number; filled: number; expired: number; cancelled: number } | null;
   trading_days: number;
   config: RiskSettings;
 }
