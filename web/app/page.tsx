@@ -387,10 +387,11 @@ export default function Home() {
                 </div>
                 <div className="table-wrap">
                   <table>
-                    <thead><tr><th>Giriş</th><th>Çıkış</th><th className="r">Giriş fiyatı</th><th className="r">Çıkış fiyatı</th><th className="r">Bar</th><th>Çıkış nedeni</th><th className="r">R</th><th className="r">Getiri</th><th className="r">K/Z</th></tr></thead>
+                    <thead><tr><th>Yön</th><th>Giriş</th><th>Çıkış</th><th className="r">Giriş fiyatı</th><th className="r">Çıkış fiyatı</th><th className="r">Bar</th><th>Çıkış nedeni</th><th className="r">R</th><th className="r">Getiri</th><th className="r">K/Z</th></tr></thead>
                     <tbody>
                       {(showAllTrades ? trades : trades.slice(0, 25)).map((t) => (
                         <tr key={t.entry_time}>
+                          <td className={t.side === "short" ? "neg" : "pos"}>{t.side === "short" ? "Satış" : "Alış"}</td>
                           <td>{shortTime(t.entry_time)}</td>
                           <td>{shortTime(t.exit_time)}{t.forced_exit && <span className="tag sm">açık</span>}</td>
                           <td className="r">{fmt(t.entry_price, 4)}</td>

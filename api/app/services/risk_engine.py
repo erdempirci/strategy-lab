@@ -1,4 +1,4 @@
-"""Risk-managed backtest engine (prop-firm style).
+"""Risk-managed backtest engine (prop-firm style). Long and short (signal 1 / -1).
 
 Differences from the simple engine (`backtester.run_backtest`):
 - Position size from risk: qty = equity × risk% / (loss per unit if the stop fills),
@@ -98,16 +98,17 @@ def run_risk_backtest(
 
     def exit_trade(i: int, raw_px: float, reason: str, slipped: bool = True) -> None:
         nonlocal cash, qty, pos, total_fees
-        px = raw_px * (1 - slip) if slipped else raw_px
-        proceeds = qty * px
-        f = proceeds * fee
+        side = pos["side"]
+        px = raw_px * (1 - side * slip) if slipped else raw_px
+        f = abs(qty) * px * fee
         total_fees += f
-        cash += proceeds - f
+        cash += qty * px - f
         pnl = cash - pos["equity_before"]
         trades.append({
+            "side": "long" if side > 0 else "short",
             "entry_time": pos["time"], "entry_price": round(pos["fill"], 8),
             "exit_time": times.iloc[i].isoformat(), "exit_price": round(px, 8),
-            "quantity": round(qty, 8), "bars_held": i - pos["index"],
+            "quantity": round(abs(qty), 8), "bars_held": i - pos["index"],
             "fees": round(pos["fee"] + f, 4), "pnl": round(pnl, 4),
             "return_pct": round(pnl / pos["equity_before"] * 100, 4),
             "r_multiple": round(pnl / pos["risk_amount"], 3) if pos["risk_amount"] > 0 else None,
@@ -129,64 +130,75 @@ def run_risk_backtest(
         prev_sig = sig[i - 1] if i >= 1 else np.nan
         prev2 = sig[i - 2] if i >= 2 else np.nan
 
-        # 1) signal exit at the open
-        if pos is not None and prev_sig == 0.0:
+        # 1) signal exit at the open (signal went flat or flipped side)
+        if pos is not None and prev_sig != pos["side"]:
             exit_trade(i, o[i], "signal")
 
-        # 2) fresh entry at the open
+        # 2) fresh entry at the open: the signal just moved into ±1
         if (pos is None and blown_at is None and not day_blocked
-                and prev_sig == 1.0 and prev2 == 0.0):
-            fill = o[i] * (1 + slip)
+                and prev_sig in (1.0, -1.0) and np.isfinite(prev2) and prev2 != prev_sig):
+            side = int(prev_sig)
+            fill = o[i] * (1 + side * slip)
             if stop_levels is not None:
                 level = stop_levels[i - 1]
-                dist = fill - level if np.isfinite(level) else np.nan
+                dist = side * (fill - level) if np.isfinite(level) else np.nan
             elif use_pct:
                 dist = fill * stop_pct
             else:
                 a = atr[i - 1]
                 dist = risk.stop_atr_mult * a if np.isfinite(a) else np.nan
-            if not np.isfinite(dist) or dist <= 0 or dist >= fill:
+            if not np.isfinite(dist) or dist <= 0 or (side > 0 and dist >= fill):
                 skipped_no_stop += 1
             else:
-                stop = fill - dist
-                loss_per_unit = fill - stop * (1 - slip) + fee * (fill + stop)
-                equity_before = cash
+                stop = fill - side * dist
+                loss_per_unit = side * (fill - stop * (1 - side * slip)) + fee * (fill + stop)
+                equity_before = cash if qty == 0 else cash + qty * o[i]
                 risk_amount = equity_before * r
                 q = risk_amount / loss_per_unit
                 q = min(q, equity_before * risk.max_leverage / (fill * (1 + fee)))
                 if take_profit_pct_override is not None:
-                    target = fill * (1 + take_profit_pct_override / 100)
+                    target = fill * (1 + side * take_profit_pct_override / 100)
                 elif take_profit_rr_override:
-                    target = fill + take_profit_rr_override * dist
+                    target = fill + side * take_profit_rr_override * dist
                 elif risk.take_profit_rr:
-                    target = fill + risk.take_profit_rr * dist
+                    target = fill + side * risk.take_profit_rr * dist
                 else:
                     target = None
                 entry_fee = q * fill * fee
                 total_fees += entry_fee
-                cash -= q * fill + entry_fee
-                qty = q
+                cash -= side * q * fill + entry_fee
+                qty = side * q
                 pos = {"index": i, "time": times.iloc[i].isoformat(), "fill": fill, "stop": stop,
                        "target": target, "fee": entry_fee, "equity_before": equity_before,
-                       "risk_amount": q * loss_per_unit, "notional": q * fill}
+                       "risk_amount": q * loss_per_unit, "notional": q * fill, "side": side}
 
-        # 3) intrabar protection: stop, daily limit, total floor (highest level hits first)
+        # 3) intrabar protection: stop, daily limit, total floor. Longs lose as price falls,
+        #    so the HIGHEST protective level is touched first; shorts: the LOWEST.
         if pos is not None:
+            side = pos["side"]
             levels = [(pos["stop"], "stop")]
             if day_floor is not None:
                 levels.append(((day_floor - cash) / qty, "daily_limit"))
             if floor is not None:
                 levels.append(((floor - cash) / qty, "max_total_loss"))
-            level, reason = max(levels, key=lambda x: x[0])
-            if lo[i] <= level:
-                exit_trade(i, min(o[i], level), reason)
+            if side > 0:
+                level, reason = max(levels, key=lambda x: x[0])
+                hit, gap_px = lo[i] <= level, min(o[i], level)
+            else:
+                level, reason = min(levels, key=lambda x: x[0])
+                hit, gap_px = h[i] >= level, max(o[i], level)
+            tgt = pos["target"]
+            if hit:
+                exit_trade(i, gap_px, reason)
                 if reason == "daily_limit":
                     day_blocked = True
                     day_breaches += 1
                 elif reason == "max_total_loss":
                     blown_at = times.iloc[i].isoformat()
-            elif pos["target"] is not None and h[i] >= pos["target"]:
-                exit_trade(i, max(o[i], pos["target"]), "target", slipped=False)
+            elif tgt is not None and side > 0 and h[i] >= tgt:
+                exit_trade(i, max(o[i], tgt), "target", slipped=False)
+            elif tgt is not None and side < 0 and lo[i] <= tgt:
+                exit_trade(i, min(o[i], tgt), "target", slipped=False)
 
         if pos is not None:
             bars_in_market += 1

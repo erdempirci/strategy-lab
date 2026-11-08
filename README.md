@@ -93,6 +93,9 @@ DSL which is validated before anything runs — **no generated code is ever exec
   (e.g. highest RSI(14) of 100 bars)
 - Operands: `open high low close volume hour weekday`, indicator ids, numbers, look-back `close[1]`
 - Operators: `> < >= <= crosses_above crosses_below`; `all` = AND, `any` = OR
+- **Long and short:** `entry`/`exit` are the long rules, `short_entry`/`short_exit` the short
+  rules, `short_stop_at` the short structural stop (e.g. `"high"`). An opposite-side entry
+  flips the position. Shorts assume a short-capable account (futures / CFD / margin).
 - Candle anatomy operands: `body`, `upper_wick`, `lower_wick`, `range`; conditions accept
   `right_mult` (e.g. `lower_wick > body × 2`).
 - `stop_at`: structural stop read at the signal bar (e.g. `"low"` = the signal candle's wick);
@@ -180,7 +183,7 @@ Vercel Hobby crons are daily-only). GitHub pauses scheduled workflows after 60 d
 repo activity; re-enable from the Actions tab.
 
 ## Backtest engine
-Trade-based, long/flat (`api/app/services/backtester.py`):
+Trade-based, long / short / flat (`api/app/services/backtester.py`):
 - Signal at bar close → fill at **next bar open** (no look-ahead).
 - Slippage applied against the fill price; fees as % of notional on entry and exit.
 - 100% of equity per trade, compounded, no leverage; equity marked to market every bar.

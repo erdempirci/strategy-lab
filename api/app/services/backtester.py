@@ -72,7 +72,11 @@ def run_backtest(
     slippage_bps: float = 2,
     trading_minutes_per_year: int = 365 * 24 * 60,
 ) -> dict:
-    """Run a long/flat backtest from a 0/1 target-position signal aligned to `frame`."""
+    """Backtest a target-position signal aligned to `frame`: 1 = long, 0 = flat, -1 = short.
+
+    Positions are 100% of equity (1x notional), long or short. Short P&L mirrors long P&L;
+    sells fill at open × (1 − slippage), buys at open × (1 + slippage).
+    """
     if initial_capital <= 0:
         raise ValueError("initial_capital must be positive")
     data = _validate_frame(frame)
@@ -91,27 +95,40 @@ def run_backtest(
     n = len(data)
 
     cash = float(initial_capital)
-    qty = 0.0
+    qty = 0.0                      # signed: > 0 long, < 0 short
     entry: dict | None = None
     trades: list[dict] = []
     equity = np.empty(n)
     total_fees = 0.0
     bars_in_market = 0
 
+    def open_position(i: int, side: int) -> None:
+        nonlocal cash, qty, entry, total_fees
+        px = opens[i] * (1 + slip) if side > 0 else opens[i] * (1 - slip)
+        capital = cash
+        q = capital / (px * (1 + fee))
+        entry_fee = q * px * fee
+        total_fees += entry_fee
+        cash -= side * q * px + entry_fee
+        qty = side * q
+        entry = {"index": i, "time": times.iloc[i].isoformat(), "price": round(px, 8),
+                 "capital": capital, "fee": entry_fee, "side": side}
+
     def close_position(i: int, raw_price: float, forced: bool) -> None:
         nonlocal cash, qty, entry, total_fees
-        px = raw_price * (1 - slip)
-        proceeds = qty * px
-        exit_fee = proceeds * fee
+        side = entry["side"]
+        px = raw_price * (1 - slip) if side > 0 else raw_price * (1 + slip)
+        exit_fee = abs(qty) * px * fee
         total_fees += exit_fee
-        cash = proceeds - exit_fee
+        cash += qty * px - exit_fee
         pnl = cash - entry["capital"]
         trades.append({
+            "side": "long" if side > 0 else "short",
             "entry_time": entry["time"],
             "entry_price": entry["price"],
             "exit_time": times.iloc[i].isoformat(),
             "exit_price": round(px, 8),
-            "quantity": round(qty, 8),
+            "quantity": round(abs(qty), 8),
             "bars_held": i - entry["index"],
             "fees": round(entry["fee"] + exit_fee, 4),
             "pnl": round(pnl, 4),
@@ -124,24 +141,19 @@ def run_backtest(
     for i in range(n):
         # 1) Execute the order decided at the previous bar's close, at this bar's open.
         if i > 0 and not np.isnan(sig[i - 1]):
-            want_long = sig[i - 1] > 0.5
-            if want_long and qty == 0.0:
-                px = opens[i] * (1 + slip)
-                capital = cash
-                qty = capital / (px * (1 + fee))
-                entry_fee = qty * px * fee
-                total_fees += entry_fee
-                cash = 0.0
-                entry = {"index": i, "time": times.iloc[i].isoformat(), "price": round(px, 8),
-                         "capital": capital, "fee": entry_fee}
-            elif not want_long and qty > 0.0:
-                close_position(i, opens[i], forced=False)
+            want = int(np.sign(sig[i - 1]))
+            held = int(np.sign(qty))
+            if held != want:
+                if held != 0:
+                    close_position(i, opens[i], forced=False)
+                if want != 0:
+                    open_position(i, want)
         # 2) Mark to market at the close.
-        if qty > 0.0:
+        if qty != 0.0:
             bars_in_market += 1
         equity[i] = cash + qty * closes[i]
 
-    if qty > 0.0:
+    if qty != 0.0:
         close_position(n - 1, closes[-1], forced=True)
         equity[-1] = cash
 

@@ -76,8 +76,10 @@ export function RulesCard({ c }: { c: CustomStrategyState }) {
       {r && (
         <div className="rule-grid">
           {r.indicators.length > 0 && <RuleBlock title="Göstergeler" lines={r.indicators} />}
-          <RuleBlock title="Giriş (hepsi)" lines={r.entry} />
-          {r.exit.length > 0 && <RuleBlock title="Çıkış" lines={r.exit} />}
+          {r.entry.length > 0 && <RuleBlock title="Alış girişi (hepsi)" lines={r.entry} />}
+          {r.exit.length > 0 && <RuleBlock title="Alış çıkışı" lines={r.exit} />}
+          {(r.short_entry?.length ?? 0) > 0 && <RuleBlock title="Satış (short) girişi (hepsi)" lines={r.short_entry ?? []} />}
+          {(r.short_exit?.length ?? 0) > 0 && <RuleBlock title="Satış (short) çıkışı" lines={r.short_exit ?? []} />}
           {r.risk.length > 0 && <RuleBlock title="Risk" lines={r.risk} />}
         </div>
       )}

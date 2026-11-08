@@ -75,8 +75,12 @@ SYSTEM_PROMPT = """You translate a trader's strategy description (usually Turkis
 Strategy Lab DSL and submit it with the submit_strategy tool. Always call the tool exactly once.
 
 DSL facts:
-- Long/flat only (no shorting, no leverage, no pyramiding). Signals are evaluated at bar CLOSE,
-  orders fill at the NEXT bar's open. One timeframe per strategy (the one the user runs it on).
+- Long AND short are supported (no leverage, no pyramiding, one position at a time).
+  "entry"/"exit" are the LONG rules; "short_entry"/"short_exit" are the SHORT rules. Use
+  only the sides the user asks for; a pattern that "trades in its direction" (e.g. engulfing
+  either way, breakout up or down) means BOTH sides. An opposite-side entry while in a
+  position reverses it. Signals are evaluated at bar CLOSE, orders fill at the NEXT bar's
+  open. One timeframe per strategy (the one the user runs it on).
 - indicators: list of {id, type, ...}. Types and their params:
   sma/ema/rsi/roc: period, source(open|high|low|close|volume, default close)
   highest/lowest: period (uses high/low by default; INCLUDES the current bar)
@@ -101,18 +105,21 @@ DSL facts:
   the entry; the fill is the next open). "Stop at the wick / candle low" = "low"; "below the
   previous candle" = "low[1]"; "below the 10-bar swing low" = a lowest(10) indicator id.
   "take_profit_rr": target as a multiple of (entry − stop), e.g. 1:1.5 → 1.5.
+  Shorts: "short_stop_at", e.g. "high" = the signal candle's upper wick. With both sides,
+  set both stop_at and short_stop_at. take_profit_rr applies to both sides.
   Do not combine stop_at with stop_loss_pct, or take_profit_rr with take_profit_pct.
 - Candle anatomy operands: body, upper_wick, lower_wick, range (high − low), with look-back
   too (e.g. "lower_wick[1]"). A condition may scale its right side with "right_mult":
   {"left":"lower_wick","op":">","right":"body","right_mult":2} = lower wick > 2 × body.
 - Candle patterns: bullish engulfing = close > open, close[1] < open[1], close >= open[1],
-  open <= close[1]. Wick rejection = lower_wick > body (× k). Liquidity sweep = low < low[1].
+  open <= close[1]; bearish engulfing = close < open, close[1] > open[1], close <= open[1],
+  open >= close[1]. Wick rejection = lower_wick > body (× k). Liquidity sweep = low < low[1].
 - Session times are UTC. Istanbul is UTC+3, London is UTC+0 in winter / +1 in summer,
   New York UTC-5 / -4. Convert and say so in explanation_tr.
 
 Rules:
 - Never silently drop or change what the user asked. If something cannot be expressed
-  (shorting, intrabar stops, trailing stops, multi-timeframe filters, Fibonacci levels,
+  (trailing stops, multi-timeframe filters, Fibonacci levels,
   fair value gaps, market structure, news, position sizing, order book, other symbols),
   approximate only when the approximation is faithful, and list every gap in `unsupported`.
 - If the user gives no exit, choose a simple, conventional one and state it in explanation_tr.
