@@ -189,3 +189,41 @@ def test_status_reports_provider(only):
     body = client.get("/api/ai/status").json()
     assert body["enabled"] is True and body["provider"] == "gemini"
     assert body["provider_label"] == "Gemini"
+
+
+def test_gemini_sends_low_reasoning_effort_nvidia_does_not(only):
+    only(GEMINI_API_KEY="g")
+    seen = []
+    translate("strateji", openai_client([chat_reply(json.dumps(PAYLOAD))], seen))
+    assert seen[0]["body"]["reasoning_effort"] == "low"
+    only(NVIDIA_API_KEY="n")
+    seen = []
+    translate("strateji", openai_client([chat_reply(json.dumps(PAYLOAD))], seen))
+    assert "reasoning_effort" not in seen[0]["body"]
+
+
+def test_gemini_retries_without_reasoning_effort_if_rejected(only):
+    only(GEMINI_API_KEY="g")
+    bodies = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        bodies.append(body)
+        if "reasoning_effort" in body:
+            return httpx.Response(400, text='{"error": "Invalid reasoning_effort: low"}')
+        return httpx.Response(200, json=chat_reply(json.dumps(PAYLOAD)))
+
+    out = translate("strateji", httpx.Client(transport=httpx.MockTransport(handler)))
+    assert out["provider"] == "gemini"
+    assert "reasoning_effort" in bodies[0] and "reasoning_effort" not in bodies[1]
+
+
+def test_gemini_timeout_gives_clear_504(only):
+    only(GEMINI_API_KEY="g")
+
+    def handler(request):
+        raise httpx.ReadTimeout("The read operation timed out", request=request)
+
+    with pytest.raises(AIError) as err:
+        translate("strateji", httpx.Client(transport=httpx.MockTransport(handler)))
+    assert err.value.status == 504 and "GEMINI_MODEL" in str(err.value)

@@ -30,7 +30,7 @@ export function CustomEditor({ c }: { c: CustomStrategyState }) {
       )}
       <button type="button" className="ghost" disabled={!!c.busy || c.text.trim().length < 3 || aiOff}
         onClick={c.translate}>
-        {c.busy === "ai" ? "AI yorumluyor…" : `AI ile kurala çevir${c.status?.provider_label ? ` (${c.status.provider_label})` : ""}`}
+        {c.busy === "ai" ? "AI yorumluyor… (30–60 sn sürebilir)" : `AI ile kurala çevir${c.status?.provider_label ? ` (${c.status.provider_label})` : ""}`}
       </button>
       {aiOff && <p className="hint warn-text">AI kapalı: Vercel'de GEMINI_API_KEY (ücretsiz), NVIDIA_API_KEY (ücretsiz) veya ANTHROPIC_API_KEY tanımlı değil. O zamana kadar JSON kurallarını elle yazıp test edebilirsin.</p>}
       {c.error && <p className="error">{c.error}</p>}

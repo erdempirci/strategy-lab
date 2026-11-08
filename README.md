@@ -24,6 +24,7 @@ Environment variables (all optional):
 | `ANTHROPIC_API_KEY` | AI strategy builder via Claude (paid API) |
 | `AI_PROVIDER` | `gemini` / `nvidia` / `anthropic` when more than one key is set (default order: anthropic, gemini, nvidia) |
 | `GEMINI_MODEL` / `NVIDIA_MODEL` / `ANTHROPIC_MODEL` | defaults `gemini-3.8-flash` / `meta/llama-3.1-70b-instruct` / `claude-sonnet-5-5` |
+| `GEMINI_REASONING_EFFORT` | Gemini thinking level: `none` / `low` (default, fast) / `medium` / `high` |
 | `AI_ACCESS_CODE` | if set, the AI builder asks for this code (protects your quota) |
 | `BINANCE_BASE_URL` | default `https://data-api.binance.vision` |
 | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | Masa journal storage (server side only); a secret key `sb_secret_…` or a legacy `service_role` key |
