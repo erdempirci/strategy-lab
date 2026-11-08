@@ -88,6 +88,7 @@ export function RiskReport({ info }: { info: RiskInfo }) {
       <p className="hint">
         Ortalama R: {fmt(info.avg_r_multiple)} · ortalama pozisyon: bakiyenin %{fmt(info.avg_position_pct, 0)}'i · çıkışlar:{" "}
         {Object.entries(info.exit_reasons).filter(([, n]) => n > 0).map(([k, n]) => `${reasons[k] ?? k} ${n}`).join(", ") || "—"}
+        {info.limit_orders && <> · limit emir: {info.limit_orders.placed} kondu, {info.limit_orders.filled} doldu, {info.limit_orders.expired} süresi doldu{info.limit_orders.cancelled ? `, ${info.limit_orders.cancelled} iptal` : ""}</>}
         {info.failed_at && <> · patlama: {info.failed_at.slice(0, 16).replace("T", " ")}</>}
       </p>
     </div>

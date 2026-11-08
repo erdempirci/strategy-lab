@@ -41,7 +41,7 @@ from app.strategies.dsl import (
     strategy_events,
 )
 
-ENGINE_VERSION = "0.7.0"
+ENGINE_VERSION = "0.8.0"
 
 app = FastAPI(
     title="Strategy Lab API",
@@ -154,7 +154,9 @@ def _execute(frame, signal, req, stop_pct=None, take_profit_pct=None, levels=Non
                              stop_pct_override=stop_pct, take_profit_pct_override=take_profit_pct,
                              trading_minutes_per_year=_year_minutes(req, frame),
                              stop_levels=levels, take_profit_rr_override=take_profit_rr,
-                             events=events)
+                             events=events,
+                             limit_levels=events.get("limit_levels") if events else None,
+                             limit_valid_bars=events.get("limit_valid_bars", 3) if events else 3)
 
 
 def _risk_assumptions(req) -> dict:
@@ -350,6 +352,9 @@ def backtest_custom(request: CustomBacktestRequest) -> dict:
     if len(frame) < needed:
         raise HTTPException(status_code=400, detail=f"Bu strateji en az {needed} bar istiyor")
     try:
+        if request.risk is None and (spec.entry_limit or spec.short_entry_limit):
+            raise HTTPException(status_code=400, detail=(
+                "Limit emirli giriş risk kurallarıyla çalışır: 'Risk kuralları' kutusunu aç."))
         if request.risk is None:
             result = _execute(frame, custom_signal(spec, frame), request)
         else:

@@ -108,7 +108,15 @@ DSL facts:
   Shorts: "short_stop_at", e.g. "high" = the signal candle's upper wick. With both sides,
   set both stop_at and short_stop_at. take_profit_rr applies to both sides.
   Do not combine stop_at with stop_loss_pct, or take_profit_rr with take_profit_pct.
-- Candle anatomy operands: body, upper_wick, lower_wick, range (high − low), with look-back
+- Limit entries: by default the entry fills at the next bar's open. "Enter with a limit
+  order at 50% of the (engulfing) candle" = "entry_limit": "mid" (long) / "short_entry_limit":
+  "mid" (short); "at the middle of the body" = "body_mid"; any price operand of the signal
+  bar works (e.g. "low", "close[1]", an ema id). The order rests for "limit_valid_bars" bars
+  (default 3; use the user's number if given, e.g. "2 mum bekle" → 2) and is cancelled if not
+  filled. The stop stays at stop_at / short_stop_at and take_profit_rr is measured from the
+  actual limit fill. Limit entries are supported: do NOT list them in `unsupported`.
+- Candle anatomy operands: body, upper_wick, lower_wick, range (high − low), mid
+  ((high + low) / 2), body_mid ((open + close) / 2), with look-back
   too (e.g. "lower_wick[1]"). A condition may scale its right side with "right_mult":
   {"left":"lower_wick","op":">","right":"body","right_mult":2} = lower wick > 2 × body.
 - Candle patterns: bullish engulfing = close > open, close[1] < open[1], close >= open[1],

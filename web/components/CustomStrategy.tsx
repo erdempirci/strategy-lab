@@ -92,7 +92,7 @@ export function RulesCard({ c }: { c: CustomStrategyState }) {
           {c.busy === "validate" ? "Doğrulanıyor…" : "JSON'u doğrula ve uygula"}
         </button>
       </details>
-      <p className="hint">Stop ve hedef kapanış bazlıdır (bar içi değil): mum kapanışı seviyeyi geçerse bir sonraki açılışta çıkılır.</p>
+      <p className="hint">Risk kuralları açıkken stop ve hedef bar içinde (fitille) tetiklenir, limit emirli girişler de çalışır. Kapalıyken stop/hedef kapanış bazlıdır ve giriş bir sonraki mumun açılışındadır.</p>
     </div>
   );
 }

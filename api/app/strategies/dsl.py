@@ -27,7 +27,8 @@ from app.strategies.library import ema, rsi
 
 PRICE_FIELDS = {"open", "high", "low", "close", "volume"}
 # Candle anatomy, derived from OHLC of the same bar.
-CANDLE_FIELDS = {"body", "upper_wick", "lower_wick", "range"}
+# mid = (high+low)/2 (the candle's 50% level), body_mid = (open+close)/2.
+CANDLE_FIELDS = {"body", "upper_wick", "lower_wick", "range", "mid", "body_mid"}
 TIME_FIELDS = {"hour", "weekday"}
 OUTPUTS = {"macd": {"line", "signal", "hist"}, "bb": {"upper", "middle", "lower"}}
 OPERAND_RE = re.compile(r"^(?P<name>[a-z][a-z0-9_]*(?:\.[a-z]+)?)(?:\[(?P<shift>\d{1,3})\])?$")
@@ -112,6 +113,11 @@ class StrategySpec(BaseModel):
     take_profit_rr: float | None = Field(default=None, gt=0, le=20)
     # Structural stop for shorts, e.g. "high" (the signal candle's upper wick).
     short_stop_at: str | None = Field(default=None, max_length=40)
+    # Limit entry: instead of the next open, rest a limit order at this level of the SIGNAL
+    # bar (e.g. "mid" = 50% of the engulfing candle) for limit_valid_bars bars.
+    entry_limit: str | None = Field(default=None, max_length=40)
+    short_entry_limit: str | None = Field(default=None, max_length=40)
+    limit_valid_bars: int = Field(default=3, ge=1, le=100)
 
     @model_validator(mode="after")
     def _check_references(self) -> StrategySpec:
@@ -128,6 +134,20 @@ class StrategySpec(BaseModel):
             types[ind.id] = ind.type
         if not (self.has_long or self.has_short):
             raise ValueError("entry (long) or short_entry needs at least one condition")
+        for field in ("entry_limit", "short_entry_limit"):
+            value = getattr(self, field)
+            if value is None:
+                continue
+            value = value.strip().lower()
+            setattr(self, field, value)
+            is_number = isinstance(_parse_operand(value, types), float)
+            if is_number:   # pydantic needs ValueError here
+                raise ValueError(f"{field} must be a price level of the signal bar "
+                                 "(e.g. 'mid' = 50% of the candle), not a number")
+        if self.entry_limit and not self.has_long:
+            raise ValueError("entry_limit needs entry (long); use short_entry_limit for shorts")
+        if self.short_entry_limit and not self.has_short:
+            raise ValueError("short_entry_limit needs short_entry")
         for field in ("stop_at", "short_stop_at"):
             value = getattr(self, field)
             if value is None:
@@ -182,7 +202,7 @@ class StrategySpec(BaseModel):
         base = max(chain.values(), default=0)
         shifts = []
         sides = [(c.left, c.right) for c in self.conditions()]
-        for lvl in (self.stop_at, self.short_stop_at):
+        for lvl in (self.stop_at, self.short_stop_at, self.entry_limit, self.short_entry_limit):
             if lvl:
                 sides.append((lvl, "0"))
         for pair in sides:
@@ -292,7 +312,9 @@ class _Context:
             f = self.frame
             top, bottom = f[["open", "close"]].max(axis=1), f[["open", "close"]].min(axis=1)
             s = {"body": top - bottom, "upper_wick": f["high"] - top,
-                 "lower_wick": bottom - f["low"], "range": f["high"] - f["low"]}[name].astype(float)
+                 "lower_wick": bottom - f["low"], "range": f["high"] - f["low"],
+                 "mid": (f["high"] + f["low"]) / 2,
+                 "body_mid": (f["open"] + f["close"]) / 2}[name].astype(float)
         elif name in TIME_FIELDS:
             s = self.time[name]
         else:
@@ -446,14 +468,29 @@ def strategy_events(spec: StrategySpec, frame: pd.DataFrame) -> dict:
         l_go = l_go & np.isfinite(lv_long)
     if lv_short is not None:
         s_go = s_go & np.isfinite(lv_short)
+    lim_long = ctx.operand(spec.entry_limit).to_numpy(float) if spec.entry_limit else None
+    lim_short = (ctx.operand(spec.short_entry_limit).to_numpy(float)
+                 if spec.short_entry_limit else None)
+    if lim_long is not None:
+        l_go = l_go & np.isfinite(lim_long)
+    if lim_short is not None:
+        s_go = s_go & np.isfinite(lim_short)
     l_go, s_go = l_go.copy(), s_go.copy()
     l_go[:warm] = False                  # warm-up bars count as "no setup"
     s_go[:warm] = False
     rise_l = l_go & ~np.r_[False, l_go[:-1]]
     rise_s = s_go & ~np.r_[False, s_go[:-1]]
     entry = np.where(rise_l & ~rise_s, 1.0, np.where(rise_s & ~rise_l, -1.0, 0.0))
-    return {"entry": entry, "exit_long": l_out, "exit_short": s_out,
-            "max_bars": spec.max_bars_in_trade}
+    out = {"entry": entry, "exit_long": l_out, "exit_short": s_out,
+           "max_bars": spec.max_bars_in_trade, "limit_levels": None,
+           "limit_valid_bars": spec.limit_valid_bars}
+    if lim_long is not None or lim_short is not None:
+        nan = np.full(n, np.nan)
+        lv_l = lim_long if lim_long is not None else nan
+        lv_s = lim_short if lim_short is not None else nan
+        # NaN on a side without a limit -> that side enters at the next open as before
+        out["limit_levels"] = np.where(entry > 0, lv_l, np.where(entry < 0, lv_s, np.nan))
+    return out
 
 
 def _side_levels(spec: StrategySpec, ctx: _Context):
@@ -502,7 +539,8 @@ _IND_TR = {"sma": "SMA", "ema": "EMA", "rsi": "RSI", "macd": "MACD", "bb": "Boll
 _FIELD_TR = {"open": "açılış", "high": "yüksek", "low": "düşük", "close": "kapanış",
              "volume": "hacim", "hour": "saat (UTC)", "weekday": "haftanın günü (0=Pzt)",
              "body": "gövde", "upper_wick": "üst fitil", "lower_wick": "alt fitil",
-             "range": "mum boyu"}
+             "range": "mum boyu", "mid": "mumun %50 seviyesi (orta)",
+             "body_mid": "gövdenin ortası"}
 
 
 def _operand_tr(text: str) -> str:
@@ -550,6 +588,12 @@ def describe(spec: StrategySpec) -> dict:
         risk.append(f"En fazla {spec.max_bars_in_trade} bar pozisyonda kal")
     if spec.short_stop_at:
         risk.append(f"Short stop: sinyal mumundaki '{_operand_tr(spec.short_stop_at)}' seviyesi")
+    if spec.entry_limit:
+        risk.append(f"Alış girişi: sinyal mumunun '{_operand_tr(spec.entry_limit)}' seviyesine "
+                    f"limit emir, {spec.limit_valid_bars} bar geçerli (dolmazsa iptal)")
+    if spec.short_entry_limit:
+        risk.append(f"Satış girişi: sinyal mumunun '{_operand_tr(spec.short_entry_limit)}' "
+                    f"seviyesine limit emir, {spec.limit_valid_bars} bar geçerli (dolmazsa iptal)")
     return {"indicators": [ind_tr(i) for i in spec.indicators], "entry": rules_tr(spec.entry),
             "exit": rules_tr(spec.exit), "short_entry": rules_tr(spec.short_entry),
             "short_exit": rules_tr(spec.short_exit), "risk": risk}
