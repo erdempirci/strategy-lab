@@ -31,7 +31,7 @@ const MARKET_DEFAULTS: MarketParams = {
 
 const MAX_BARS = 50000;
 const EXIT_TR: Record<string, string> = {
-  signal: "sinyal", stop: "stop", target: "hedef", daily_limit: "günlük limit",
+  signal: "sinyal", time: "süre doldu", stop: "stop", target: "hedef", daily_limit: "günlük limit",
   max_total_loss: "toplam limit", end_of_data: "veri sonu",
 };
 

@@ -32,7 +32,14 @@ from app.schemas import (
 from app.services.backtester import run_backtest
 from app.services.risk_engine import RiskConfig, run_risk_backtest
 from app.strategies import STRATEGIES, build_signal
-from app.strategies.dsl import StrategySpec, custom_signal, describe, overlay_lines, stop_levels
+from app.strategies.dsl import (
+    StrategySpec,
+    custom_signal,
+    describe,
+    overlay_lines,
+    stop_levels,
+    strategy_events,
+)
 
 ENGINE_VERSION = "0.7.0"
 
@@ -137,7 +144,7 @@ def _quality(frame, req) -> dict:
 
 
 def _execute(frame, signal, req, stop_pct=None, take_profit_pct=None, levels=None,
-             take_profit_rr=None) -> dict:
+             take_profit_rr=None, events=None) -> dict:
     """Simple engine, or the risk engine when the request carries risk settings."""
     if req.risk is None:
         return run_backtest(frame, signal, req.timeframe, req.initial_capital,
@@ -146,7 +153,8 @@ def _execute(frame, signal, req, stop_pct=None, take_profit_pct=None, levels=Non
                              req.initial_capital, req.fee_bps, req.slippage_bps,
                              stop_pct_override=stop_pct, take_profit_pct_override=take_profit_pct,
                              trading_minutes_per_year=_year_minutes(req, frame),
-                             stop_levels=levels, take_profit_rr_override=take_profit_rr)
+                             stop_levels=levels, take_profit_rr_override=take_profit_rr,
+                             events=events)
 
 
 def _risk_assumptions(req) -> dict:
@@ -346,10 +354,11 @@ def backtest_custom(request: CustomBacktestRequest) -> dict:
             result = _execute(frame, custom_signal(spec, frame), request)
         else:
             sig = custom_signal(spec, frame, apply_stops=False)
+            events = strategy_events(spec, frame)
             result = _execute(frame, sig, request,
                               stop_pct=spec.stop_loss_pct, take_profit_pct=spec.take_profit_pct,
-                              levels=stop_levels(spec, frame, sig),
-                              take_profit_rr=spec.take_profit_rr)
+                              levels=stop_levels(spec, frame, pd.Series(events["entry"])),
+                              take_profit_rr=spec.take_profit_rr, events=events)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not request.include_trades:
