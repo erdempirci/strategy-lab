@@ -101,3 +101,91 @@ def test_custom_backtest_needs_enough_bars():
 
 def test_tool_schema_has_no_refs():
     assert "$ref" not in json.dumps(translator.tool_definition())
+
+
+# ------------------------------------------------ Gemini / NVIDIA (OpenAI-compatible)
+def chat_reply(content, model="gemini-3.8-flash"):
+    return {"model": model, "choices": [{"message": {"role": "assistant", "content": content}}]}
+
+
+PAYLOAD = {"spec": GOOD_SPEC, "explanation_tr": "Yorum", "unsupported": []}
+
+
+@pytest.fixture
+def only(monkeypatch):
+    def _set(**keys):
+        for k in ("ANTHROPIC_API_KEY", "GEMINI_API_KEY", "NVIDIA_API_KEY", "AI_PROVIDER"):
+            monkeypatch.delenv(k, raising=False)
+        for k, v in keys.items():
+            monkeypatch.setenv(k, v)
+    return _set
+
+
+def openai_client(replies, seen):
+    def handler(request):
+        seen.append({"url": str(request.url), "auth": request.headers.get("authorization"),
+                     "body": json.loads(request.content)})
+        return httpx.Response(200, json=replies.pop(0))
+    return httpx.Client(transport=httpx.MockTransport(handler))
+
+
+def test_provider_selection(only):
+    from app.ai.translator import active_provider
+    only()
+    assert active_provider() is None
+    only(NVIDIA_API_KEY="n")
+    assert active_provider() == "nvidia"
+    only(NVIDIA_API_KEY="n", GEMINI_API_KEY="g")
+    assert active_provider() == "gemini"
+    only(NVIDIA_API_KEY="n", GEMINI_API_KEY="g", AI_PROVIDER="nvidia")
+    assert active_provider() == "nvidia"
+    only(GEMINI_API_KEY="g", AI_PROVIDER="anthropic")      # no key for it -> fall back
+    assert active_provider() == "gemini"
+
+
+def test_gemini_plain_json(only):
+    only(GEMINI_API_KEY="g-key")
+    seen = []
+    out = translate("strateji", openai_client([chat_reply(json.dumps(PAYLOAD))], seen))
+    assert out["provider"] == "gemini" and out["spec"]["stop_loss_pct"] == 2
+    req = seen[0]
+    assert req["url"] == "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+    assert req["auth"] == "Bearer g-key"
+    assert req["body"]["messages"][0]["role"] == "system"
+    assert "JSON" in req["body"]["messages"][0]["content"]
+
+
+def test_nvidia_fenced_json_with_think_block_and_retry(only):
+    only(NVIDIA_API_KEY="n-key")
+    bad = {**PAYLOAD, "spec": {**GOOD_SPEC, "entry": {"all": [{"left": "close", "op": ">",
+                                                               "right": "ema50"}]}}}
+    first = "<think>hmm {not json}</think>Here you go:\n```json\n" + json.dumps(bad) + "\n```"
+    seen = []
+    out = translate("strateji", openai_client(
+        [chat_reply(first, "meta/llama"), chat_reply(json.dumps(PAYLOAD), "meta/llama")], seen))
+    assert out["provider"] == "nvidia" and out["model"] == "meta/llama"
+    assert seen[0]["url"].startswith("https://integrate.api.nvidia.com/v1/")
+    retry = seen[1]["body"]["messages"]
+    assert retry[-2]["role"] == "assistant" and "ema50" in retry[-1]["content"]
+
+
+def test_openai_provider_gives_up_on_garbage(only):
+    only(GEMINI_API_KEY="g")
+    with pytest.raises(AIError) as err:
+        translate("strateji", openai_client([chat_reply("sorry"), chat_reply("still no")], []))
+    assert err.value.status == 422
+
+
+def test_openai_provider_rate_limit_message(only):
+    only(GEMINI_API_KEY="g")
+    c = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(429)))
+    with pytest.raises(AIError) as err:
+        translate("strateji", c)
+    assert err.value.status == 429 and "Gemini" in str(err.value)
+
+
+def test_status_reports_provider(only):
+    only(GEMINI_API_KEY="g")
+    body = client.get("/api/ai/status").json()
+    assert body["enabled"] is True and body["provider"] == "gemini"
+    assert body["provider_label"] == "Gemini"

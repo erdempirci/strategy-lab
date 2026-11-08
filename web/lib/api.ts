@@ -31,7 +31,8 @@ export const compareAll = (market: MarketParams) =>
   call<CompareResult>("/compare", { method: "POST", body: JSON.stringify(market) });
 
 export const aiStatus = () =>
-  call<{ enabled: boolean; access_code_required: boolean }>("/ai/status");
+  call<{ enabled: boolean; access_code_required: boolean; provider?: string | null;
+         provider_label?: string | null }>("/ai/status");
 
 export const aiTranslate = (text: string, access_code?: string) =>
   call<AIStrategy>("/ai/strategy", { method: "POST", body: JSON.stringify({ text, access_code }) });

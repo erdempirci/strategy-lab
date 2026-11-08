@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 
 import httpx
 from pydantic import ValidationError
@@ -124,54 +125,170 @@ def _tool_use(body: dict) -> dict | None:
     return None
 
 
+# ------------------------------------------------- OpenAI-compatible providers
+# Gemini (Google AI Studio, free tier) and NVIDIA build (free) both speak the OpenAI
+# Chat Completions format. Tool-calling support differs between their models, so these
+# providers return the same payload as plain JSON, which is then validated identically.
+OPENAI_PROVIDERS = {
+    "gemini": {"key": "GEMINI_API_KEY", "model_env": "GEMINI_MODEL",
+               "base": "https://generativelanguage.googleapis.com/v1beta/openai",
+               "model": "gemini-3.8-flash", "label": "Gemini"},
+    "nvidia": {"key": "NVIDIA_API_KEY", "model_env": "NVIDIA_MODEL",
+               "base": "https://integrate.api.nvidia.com/v1",
+               "model": "meta/llama-3.1-70b-instruct", "label": "NVIDIA"},
+}
+PROVIDER_ORDER = ("anthropic", "gemini", "nvidia")
+KEY_ENV = {"anthropic": "ANTHROPIC_API_KEY", **{k: v["key"] for k, v in OPENAI_PROVIDERS.items()}}
+LABEL = {"anthropic": "Claude", **{k: v["label"] for k, v in OPENAI_PROVIDERS.items()}}
+
+
+def provider_label(provider: str | None) -> str | None:
+    return LABEL.get(provider) if provider else None
+
+
+def active_provider() -> str | None:
+    """AI_PROVIDER if set and keyed, else the first provider with a key."""
+    wanted = os.getenv("AI_PROVIDER", "").strip().lower()
+    if wanted in KEY_ENV and os.getenv(KEY_ENV[wanted]):
+        return wanted
+    return next((p for p in PROVIDER_ORDER if os.getenv(KEY_ENV[p])), None)
+
+
+def _json_instructions() -> str:
+    schema = json.dumps(tool_definition()["input_schema"], ensure_ascii=False)
+    intro = re.sub(r"submit it with the submit_strategy tool\.\s+Always call the tool\s+exactly once\.",
+                   "answer with JSON only.", SYSTEM_PROMPT)
+    return (intro
+            + "\n\nOUTPUT FORMAT: reply with ONE JSON object and nothing else (no prose, no "
+              "markdown fences) matching this JSON Schema:\n" + schema)
+
+
+def _extract_json(text: str) -> dict | None:
+    text = re.sub(r"<think>.*?</think>", "", text or "", flags=re.DOTALL).strip()
+    fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, flags=re.DOTALL)
+    if fenced:
+        text = fenced.group(1)
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        obj = json.loads(text[start:end + 1])
+    except json.JSONDecodeError:
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def _openai_call(provider: str, messages: list[dict], client: httpx.Client) -> tuple[str, str]:
+    cfg = OPENAI_PROVIDERS[provider]
+    base = os.getenv(f"{provider.upper()}_BASE_URL", cfg["base"]).rstrip("/")
+    model = os.getenv(cfg["model_env"], cfg["model"])
+    resp = client.post(f"{base}/chat/completions", headers={
+        "Authorization": f"Bearer {os.getenv(cfg['key'])}", "Content-Type": "application/json",
+    }, json={"model": model, "messages": messages, "temperature": 0.1, "max_tokens": 4000})
+    label = cfg["label"]
+    if resp.status_code in (401, 403):
+        raise AIError(f"{cfg['key']} geçersiz veya yetkisiz", 502)
+    if resp.status_code == 429:
+        raise AIError(f"{label} ücretsiz kullanım limitine takıldı, biraz sonra tekrar dene", 429)
+    if resp.status_code != 200:
+        raise AIError(f"{label} API hatası {resp.status_code}: {resp.text[:300]}")
+    body = resp.json()
+    try:
+        content = body["choices"][0]["message"].get("content") or ""
+    except (KeyError, IndexError, TypeError) as exc:
+        raise AIError(f"{label} beklenmeyen yanıt verdi") from exc
+    if isinstance(content, list):      # some servers return content parts
+        content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
+    return content, body.get("model", model)
+
+
+def _translate_openai(provider: str, text: str, client: httpx.Client) -> dict:
+    messages = [{"role": "system", "content": _json_instructions()},
+                {"role": "user", "content": text}]
+    for attempt in range(2):
+        content, model = _openai_call(provider, messages, client)
+        payload = _extract_json(content)
+        problem = None
+        if payload is None:
+            problem = "Your reply was not a single valid JSON object. Reply with JSON only."
+        else:
+            try:
+                spec = StrategySpec.model_validate(payload.get("spec", {}))
+            except ValidationError as exc:
+                if attempt == 1:
+                    raise AIError(f"AI geçersiz kural üretti: {exc.errors()[0]['msg']}", 422) from exc
+                problem = ("The spec failed validation, fix it and reply with the full JSON again:\n"
+                           + json.dumps(exc.errors(include_url=False), default=str)[:3000])
+        if problem is None:
+            unsupported = payload.get("unsupported") or []
+            if not isinstance(unsupported, list):
+                unsupported = [unsupported]
+            return {"spec": spec.model_dump(exclude_none=True),
+                    "explanation": str(payload.get("explanation_tr", "")),
+                    "unsupported": [str(u) for u in unsupported][:20],
+                    "model": model, "provider": provider}
+        messages += [{"role": "assistant", "content": content[:6000]},
+                     {"role": "user", "content": problem}]
+    raise AIError("AI stratejiyi kurala çeviremedi; metni biraz daha net yazmayı dene", 422)
+
+
 def translate(text: str, client: httpx.Client | None = None) -> dict:
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise AIError("AI kapalı: Vercel'de ANTHROPIC_API_KEY ortam değişkeni tanımlı değil", 503)
+    provider = active_provider()
+    if provider is None:
+        raise AIError("AI kapalı: Vercel'de GEMINI_API_KEY, NVIDIA_API_KEY veya "
+                      "ANTHROPIC_API_KEY ortam değişkenlerinden biri tanımlı değil", 503)
     text = text.strip()
     if not text:
         raise AIError("Strateji metni boş", 400)
     if len(text) > MAX_TEXT:
         raise AIError(f"Metin en fazla {MAX_TEXT} karakter olabilir", 400)
-    model = os.getenv("ANTHROPIC_MODEL", DEFAULT_MODEL)
 
     own = client is None
     client = client or httpx.Client(timeout=90.0)
-    messages: list[dict] = [{"role": "user", "content": text}]
     try:
-        for attempt in range(2):
-            body = _call(messages, api_key, model, client)
-            block = _tool_use(body)
-            if block is None:
-                if attempt == 0:
-                    messages += [{"role": "assistant", "content": body.get("content", [])},
-                                 {"role": "user", "content": "Please call submit_strategy now."}]
-                    continue
-                raise AIError("AI stratejiyi kurala çeviremedi; metni biraz daha net yazmayı dene", 422)
-            payload = block.get("input", {})
-            try:
-                spec = StrategySpec.model_validate(payload.get("spec", {}))
-            except ValidationError as exc:
-                if attempt == 0:
-                    messages += [
-                        {"role": "assistant", "content": body["content"]},
-                        {"role": "user", "content": [{
-                            "type": "tool_result", "tool_use_id": block["id"], "is_error": True,
-                            "content": "Spec failed validation, fix and call again:\n"
-                                       + json.dumps(exc.errors(include_url=False), default=str)[:3000],
-                        }]},
-                    ]
-                    continue
-                raise AIError(f"AI geçersiz kural üretti: {exc.errors()[0]['msg']}", 422) from exc
-            return {
-                "spec": spec.model_dump(exclude_none=True),
-                "explanation": str(payload.get("explanation_tr", "")),
-                "unsupported": [str(u) for u in payload.get("unsupported", [])][:20],
-                "model": body.get("model", model),
-            }
-        raise AIError("AI yanıtı işlenemedi", 502)
+        if provider != "anthropic":
+            return _translate_openai(provider, text, client)
+        return _translate_anthropic(text, client)
     except httpx.HTTPError as exc:
-        raise AIError(f"Claude API'ye ulaşılamadı: {exc}") from exc
+        raise AIError(f"{LABEL[provider]} API'ye ulaşılamadı: {exc}") from exc
     finally:
         if own:
             client.close()
+
+
+def _translate_anthropic(text: str, client: httpx.Client) -> dict:
+    api_key = os.environ["ANTHROPIC_API_KEY"]
+    model = os.getenv("ANTHROPIC_MODEL", DEFAULT_MODEL)
+    messages: list[dict] = [{"role": "user", "content": text}]
+    for attempt in range(2):
+        body = _call(messages, api_key, model, client)
+        block = _tool_use(body)
+        if block is None:
+            if attempt == 0:
+                messages += [{"role": "assistant", "content": body.get("content", [])},
+                             {"role": "user", "content": "Please call submit_strategy now."}]
+                continue
+            raise AIError("AI stratejiyi kurala çeviremedi; metni biraz daha net yazmayı dene", 422)
+        payload = block.get("input", {})
+        try:
+            spec = StrategySpec.model_validate(payload.get("spec", {}))
+        except ValidationError as exc:
+            if attempt == 0:
+                messages += [
+                    {"role": "assistant", "content": body["content"]},
+                    {"role": "user", "content": [{
+                        "type": "tool_result", "tool_use_id": block["id"], "is_error": True,
+                        "content": "Spec failed validation, fix and call again:\n"
+                                   + json.dumps(exc.errors(include_url=False), default=str)[:3000],
+                    }]},
+                ]
+                continue
+            raise AIError(f"AI geçersiz kural üretti: {exc.errors()[0]['msg']}", 422) from exc
+        return {
+            "spec": spec.model_dump(exclude_none=True),
+            "explanation": str(payload.get("explanation_tr", "")),
+            "unsupported": [str(u) for u in payload.get("unsupported", [])][:20],
+            "model": body.get("model", model),
+            "provider": "anthropic",
+        }
+    raise AIError("AI yanıtı işlenemedi", 502)
