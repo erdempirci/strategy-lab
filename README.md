@@ -24,6 +24,7 @@ Environment variables (all optional):
 | `ANTHROPIC_API_KEY` | AI strategy builder via Claude (paid API) |
 | `AI_PROVIDER` | `gemini` / `nvidia` / `anthropic` when more than one key is set (default order: anthropic, gemini, nvidia) |
 | `GEMINI_MODEL` / `NVIDIA_MODEL` / `ANTHROPIC_MODEL` | defaults `gemini-3.8-flash` / `meta/llama-3.1-70b-instruct` / `claude-sonnet-5-5` |
+| `GEMINI_FALLBACK_MODELS` | tried when the main Gemini model is overloaded (503) or slow; default `gemini-3.5-flash` |
 | `GEMINI_REASONING_EFFORT` | Gemini thinking level: `none` / `low` (default, fast) / `medium` / `high` |
 | `AI_ACCESS_CODE` | if set, the AI builder asks for this code (protects your quota) |
 | `BINANCE_BASE_URL` | default `https://data-api.binance.vision` |
@@ -92,7 +93,12 @@ DSL which is validated before anything runs — **no generated code is ever exec
   (e.g. highest RSI(14) of 100 bars)
 - Operands: `open high low close volume hour weekday`, indicator ids, numbers, look-back `close[1]`
 - Operators: `> < >= <= crosses_above crosses_below`; `all` = AND, `any` = OR
-- Stops/targets are close-based vs. the actual fill price.
+- Candle anatomy operands: `body`, `upper_wick`, `lower_wick`, `range`; conditions accept
+  `right_mult` (e.g. `lower_wick > body × 2`).
+- `stop_at`: structural stop read at the signal bar (e.g. `"low"` = the signal candle's wick);
+  `take_profit_rr`: target as a multiple of (entry − stop). With the risk engine these are
+  intrabar and size the position; without it they are close-based.
+- `stop_loss_pct` / `take_profit_pct` are close-based vs. the fill price (intrabar with the risk engine).
 - Anything the DSL cannot express is returned as `unsupported` and shown to the user.
 
 Endpoints: `GET /api/ai/status`, `POST /api/ai/strategy`, `POST /api/custom/validate`,

@@ -218,12 +218,40 @@ def test_gemini_retries_without_reasoning_effort_if_rejected(only):
     assert "reasoning_effort" in bodies[0] and "reasoning_effort" not in bodies[1]
 
 
-def test_gemini_timeout_gives_clear_504(only):
+def test_gemini_timeout_tries_fallback_then_clear_503(only, monkeypatch):
     only(GEMINI_API_KEY="g")
+    monkeypatch.setattr(translator, "RETRY_SLEEP_S", 0)
+    models = []
 
     def handler(request):
+        models.append(json.loads(request.content)["model"])
         raise httpx.ReadTimeout("The read operation timed out", request=request)
 
     with pytest.raises(AIError) as err:
         translate("strateji", httpx.Client(transport=httpx.MockTransport(handler)))
-    assert err.value.status == 504 and "GEMINI_MODEL" in str(err.value)
+    assert models == ["gemini-3.8-flash", "gemini-3.5-flash"]
+    assert err.value.status == 503 and "GEMINI_MODEL" in str(err.value)
+
+
+def test_gemini_overloaded_retries_then_falls_back(only, monkeypatch):
+    only(GEMINI_API_KEY="g")
+    monkeypatch.setattr(translator, "RETRY_SLEEP_S", 0)
+    models = []
+
+    def handler(request):
+        model = json.loads(request.content)["model"]
+        models.append(model)
+        if model == "gemini-3.8-flash":
+            return httpx.Response(503, json=[{"error": {"code": 503, "status": "UNAVAILABLE"}}])
+        return httpx.Response(200, json=chat_reply(json.dumps(PAYLOAD), model))
+
+    out = translate("strateji", httpx.Client(transport=httpx.MockTransport(handler)))
+    assert models == ["gemini-3.8-flash", "gemini-3.8-flash", "gemini-3.5-flash"]
+    assert out["model"] == "gemini-3.5-flash"
+
+
+def test_fallback_models_configurable(only, monkeypatch):
+    only(GEMINI_API_KEY="g", GEMINI_MODEL="a", GEMINI_FALLBACK_MODELS="b, c ,a")
+    from app.ai.translator import OPENAI_PROVIDERS, _models
+    assert _models(OPENAI_PROVIDERS["gemini"]) == ["a", "b", "c"]
+    assert _models(OPENAI_PROVIDERS["nvidia"]) == ["meta/llama-3.1-70b-instruct"]

@@ -61,7 +61,11 @@ def run_risk_backtest(
     take_profit_pct_override: float | None = None,
     return_daily: bool = False,
     trading_minutes_per_year: int = 365 * 24 * 60,
+    stop_levels: np.ndarray | None = None,
+    take_profit_rr_override: float | None = None,
 ) -> dict:
+    """stop_levels: per-bar stop price decided at the signal bar's close (structural stop,
+    e.g. the signal candle's low). Overrides the ATR/% stop when given."""
     if initial_capital <= 0:
         raise ValueError("initial_capital must be positive")
     data = _validate_frame(frame)
@@ -133,7 +137,10 @@ def run_risk_backtest(
         if (pos is None and blown_at is None and not day_blocked
                 and prev_sig == 1.0 and prev2 == 0.0):
             fill = o[i] * (1 + slip)
-            if use_pct:
+            if stop_levels is not None:
+                level = stop_levels[i - 1]
+                dist = fill - level if np.isfinite(level) else np.nan
+            elif use_pct:
                 dist = fill * stop_pct
             else:
                 a = atr[i - 1]
@@ -149,6 +156,8 @@ def run_risk_backtest(
                 q = min(q, equity_before * risk.max_leverage / (fill * (1 + fee)))
                 if take_profit_pct_override is not None:
                     target = fill * (1 + take_profit_pct_override / 100)
+                elif take_profit_rr_override:
+                    target = fill + take_profit_rr_override * dist
                 elif risk.take_profit_rr:
                     target = fill + risk.take_profit_rr * dist
                 else:

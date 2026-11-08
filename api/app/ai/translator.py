@@ -11,6 +11,7 @@ import copy
 import json
 import os
 import re
+import time
 
 import httpx
 from pydantic import ValidationError
@@ -21,7 +22,9 @@ DEFAULT_BASE_URL = "https://api.anthropic.com"
 DEFAULT_MODEL = "claude-sonnet-5-5"
 TOOL_NAME = "submit_strategy"
 MAX_TEXT = 3000
-TIMEOUT_S = 75.0
+TIMEOUT_S = 50.0       # per request
+BUDGET_S = 110.0       # all retries / fallbacks for one call
+RETRY_SLEEP_S = 2.0
 
 
 class AIError(RuntimeError):
@@ -92,8 +95,18 @@ DSL facts:
   an indicator id or output, a number like "30", and an optional look-back suffix "[n]"
   meaning n bars ago (e.g. "close[1]"). "Break of the previous 20-bar high" = close > hh[1]
   with hh = highest(20).
-- Exits: exit conditions and/or stop_loss_pct, take_profit_pct (CLOSE-based, relative to the
-  fill price) and/or max_bars_in_trade. At least one exit is required.
+- Exits: exit conditions and/or stop_loss_pct / take_profit_pct (relative to the fill price)
+  and/or max_bars_in_trade. At least one exit is required.
+- Structural stop: "stop_at": an operand read at the SIGNAL bar (the bar whose close triggers
+  the entry; the fill is the next open). "Stop at the wick / candle low" = "low"; "below the
+  previous candle" = "low[1]"; "below the 10-bar swing low" = a lowest(10) indicator id.
+  "take_profit_rr": target as a multiple of (entry − stop), e.g. 1:1.5 → 1.5.
+  Do not combine stop_at with stop_loss_pct, or take_profit_rr with take_profit_pct.
+- Candle anatomy operands: body, upper_wick, lower_wick, range (high − low), with look-back
+  too (e.g. "lower_wick[1]"). A condition may scale its right side with "right_mult":
+  {"left":"lower_wick","op":">","right":"body","right_mult":2} = lower wick > 2 × body.
+- Candle patterns: bullish engulfing = close > open, close[1] < open[1], close >= open[1],
+  open <= close[1]. Wick rejection = lower_wick > body (× k). Liquidity sweep = low < low[1].
 - Session times are UTC. Istanbul is UTC+3, London is UTC+0 in winter / +1 in summer,
   New York UTC-5 / -4. Convert and say so in explanation_tr.
 
@@ -141,7 +154,9 @@ OPENAI_PROVIDERS = {
                "model": "gemini-3.8-flash", "label": "Gemini",
                # Flash models "think" before answering; at the default level that can exceed
                # the request timeout. Accepted values: none, low, medium, high.
-               "reasoning_env": "GEMINI_REASONING_EFFORT", "reasoning": "low"},
+               "reasoning_env": "GEMINI_REASONING_EFFORT", "reasoning": "low",
+               # tried in order when the main model is overloaded (503) or times out
+               "fallback_env": "GEMINI_FALLBACK_MODELS", "fallback": "gemini-3.5-flash"},
     "nvidia": {"key": "NVIDIA_API_KEY", "model_env": "NVIDIA_MODEL",
                "base": "https://integrate.api.nvidia.com/v1",
                "model": "meta/llama-3.1-70b-instruct", "label": "NVIDIA"},
@@ -187,41 +202,74 @@ def _extract_json(text: str) -> dict | None:
     return obj if isinstance(obj, dict) else None
 
 
+RETRYABLE = {500, 502, 503, 504}
+
+
+def _models(cfg: dict) -> list[str]:
+    main = os.getenv(cfg["model_env"], cfg["model"])
+    extra = os.getenv(cfg.get("fallback_env", ""), cfg.get("fallback", "")) if cfg.get("fallback_env") else ""
+    out = [main]
+    for m in (x.strip() for x in extra.split(",")):
+        if m and m not in out:
+            out.append(m)
+    return out
+
+
+def _post_once(client: httpx.Client, url: str, headers: dict, payload: dict) -> httpx.Response:
+    resp = client.post(url, headers=headers, json=payload)
+    if resp.status_code == 400 and "reasoning" in resp.text.lower() and "reasoning_effort" in payload:
+        # This model does not accept the thinking level: retry with its default.
+        resp = client.post(url, headers=headers,
+                           json={k: v for k, v in payload.items() if k != "reasoning_effort"})
+    return resp
+
+
 def _openai_call(provider: str, messages: list[dict], client: httpx.Client) -> tuple[str, str]:
+    """One chat completion. Retries an overloaded model once, then falls back to the next
+    configured model; auth and quota errors are reported immediately."""
     cfg = OPENAI_PROVIDERS[provider]
     base = os.getenv(f"{provider.upper()}_BASE_URL", cfg["base"]).rstrip("/")
-    model = os.getenv(cfg["model_env"], cfg["model"])
-    payload = {"model": model, "messages": messages, "temperature": 0.1, "max_tokens": 6000}
-    effort = os.getenv(cfg["reasoning_env"], cfg["reasoning"]) if "reasoning_env" in cfg else ""
-    if effort:
-        payload["reasoning_effort"] = effort
+    label = cfg["label"]
     headers = {"Authorization": f"Bearer {os.getenv(cfg['key'])}",
                "Content-Type": "application/json"}
-    label = cfg["label"]
-    try:
-        resp = client.post(f"{base}/chat/completions", headers=headers, json=payload)
-        if resp.status_code == 400 and "reasoning" in resp.text.lower() and effort:
-            # Model does not accept this thinking level: retry with the model's default.
-            payload.pop("reasoning_effort")
-            resp = client.post(f"{base}/chat/completions", headers=headers, json=payload)
-    except httpx.TimeoutException as exc:
-        raise AIError(f"{label} {int(TIMEOUT_S)} saniyede yanıt vermedi. Biraz sonra tekrar dene; "
-                      f"sürerse metni kısalt ya da Vercel'de {cfg['model_env']} ile daha hızlı "
-                      "bir model seç.", 504) from exc
-    if resp.status_code in (401, 403):
-        raise AIError(f"{cfg['key']} geçersiz veya yetkisiz", 502)
-    if resp.status_code == 429:
-        raise AIError(f"{label} ücretsiz kullanım limitine takıldı, biraz sonra tekrar dene", 429)
-    if resp.status_code != 200:
-        raise AIError(f"{label} API hatası {resp.status_code}: {resp.text[:300]}")
-    body = resp.json()
-    try:
-        content = body["choices"][0]["message"].get("content") or ""
-    except (KeyError, IndexError, TypeError) as exc:
-        raise AIError(f"{label} beklenmeyen yanıt verdi") from exc
-    if isinstance(content, list):      # some servers return content parts
-        content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
-    return content, body.get("model", model)
+    effort = os.getenv(cfg["reasoning_env"], cfg["reasoning"]) if "reasoning_env" in cfg else ""
+    started = time.monotonic()
+    last = ""
+    for model in _models(cfg):
+        payload = {"model": model, "messages": messages, "temperature": 0.1, "max_tokens": 6000}
+        if effort:
+            payload["reasoning_effort"] = effort
+        for attempt in range(2):
+            if time.monotonic() - started > BUDGET_S:
+                break
+            try:
+                resp = _post_once(client, f"{base}/chat/completions", headers, payload)
+            except httpx.TimeoutException:
+                last = f"{model}: {int(TIMEOUT_S)} sn içinde yanıt yok"
+                break                                   # slow model: go to the fallback
+            if resp.status_code in (401, 403):
+                raise AIError(f"{cfg['key']} geçersiz veya yetkisiz", 502)
+            if resp.status_code == 429:
+                raise AIError(f"{label} ücretsiz kullanım limitine takıldı, biraz sonra tekrar dene",
+                              429)
+            if resp.status_code in RETRYABLE:
+                last = f"{model}: HTTP {resp.status_code} (yoğunluk)"
+                if attempt == 0:
+                    time.sleep(RETRY_SLEEP_S)
+                continue
+            if resp.status_code != 200:
+                raise AIError(f"{label} API hatası {resp.status_code}: {resp.text[:300]}")
+            body = resp.json()
+            try:
+                content = body["choices"][0]["message"].get("content") or ""
+            except (KeyError, IndexError, TypeError) as exc:
+                raise AIError(f"{label} beklenmeyen yanıt verdi") from exc
+            if isinstance(content, list):      # some servers return content parts
+                content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
+            return content, body.get("model", model)
+    raise AIError(f"{label} şu an yoğun ya da yavaş ({last}). Bir iki dakika sonra tekrar dene; "
+                  f"sürerse Vercel'de {cfg['model_env']} ile başka bir model seç ya da "
+                  "NVIDIA_API_KEY ekleyip AI_PROVIDER=nvidia yap.", 503)
 
 
 def _translate_openai(provider: str, text: str, client: httpx.Client) -> dict:
