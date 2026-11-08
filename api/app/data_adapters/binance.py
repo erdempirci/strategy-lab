@@ -64,8 +64,8 @@ def fetch_binance_ohlcv(
     """Fetch the most recent `bars` closed candles ending at `end` (default: now)."""
     if timeframe not in VALID_INTERVALS:
         raise ValueError(f"Unsupported Binance interval {timeframe!r}")
-    if bars < 1 or bars > 20_000:
-        raise ValueError("bars must be between 1 and 20000")
+    if bars < 1 or bars > 50_000:
+        raise ValueError("bars must be between 1 and 50000")
     pair = to_binance_symbol(symbol)
     now_ms = now_ms if now_ms is not None else int(time.time() * 1000)
     end_ms = int(pd.Timestamp(end).timestamp() * 1000) if end is not None else now_ms

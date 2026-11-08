@@ -8,6 +8,11 @@ from pydantic import ValidationError
 
 from app.ai.translator import AIError, active_provider, provider_label, translate
 from app.data_adapters.binance import BinanceDataError
+from app.data_adapters.csv_upload import (
+    CSVDataError,
+    looks_like_session_market,
+    parse_ohlcv_csv,
+)
 from app.data_adapters.markets import MARKETS, load_ohlcv, market_of
 from app.data_adapters.normalize import quality_report
 from app.data_adapters.stocks import StockDataError
@@ -19,6 +24,7 @@ from app.schemas import (
     AIStrategyRequest,
     BacktestRequest,
     CompareRequest,
+    CSVInspectRequest,
     CustomBacktestRequest,
     DiscoverRequest,
     SpecRequest,
@@ -51,14 +57,29 @@ app.add_middleware(CORSMiddleware, allow_origins=[o for o in _origins if o],
                    allow_methods=["GET", "POST"], allow_headers=["Content-Type"])
 
 
-def _load_frame(source: str, symbol: str, timeframe: str, bars: int):
+def _load_frame(source: str, symbol: str, timeframe: str, bars: int, csv_data: str | None = None):
     try:
+        if source == "csv":
+            if not csv_data:
+                raise ValueError("CSV verisi yok: önce bir dosya yükle")
+            frame, inferred = parse_ohlcv_csv(csv_data)
+            if inferred != timeframe:
+                raise ValueError(f"CSV'deki barlar {inferred}, ama {timeframe} seçili")
+            return frame.tail(bars).reset_index(drop=True), "csv_upload"
         frame, label = load_ohlcv(source, symbol, timeframe, bars)
         return frame.sort_values("timestamp").reset_index(drop=True), label
     except (BinanceDataError, YahooDataError, StockDataError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+CHART_BARS = 5000      # chart shows the most recent bars; metrics always use all bars
+
+
+def _clip(overlays: list[dict], candles: list[dict]) -> list[dict]:
+    start = candles[0]["time"] if candles else 0
+    return [{**o, "data": [p for p in o["data"] if p["time"] >= start]} for o in overlays]
 
 
 def _candles(frame) -> list[dict]:
@@ -98,15 +119,20 @@ def _run(strategy_id: str, raw_params: dict, frame, req) -> tuple[dict, dict]:
     return params, _execute(frame, signal, req)
 
 
-def _year_minutes(req) -> int:
-    """Calendar for annualising Sharpe: ~252 sessions (Yahoo futures / stocks), 365 in crypto."""
-    return 252 * 24 * 60 if req.data_source == "yahoo" else 365 * 24 * 60
+def _year_minutes(req, frame=None) -> int:
+    """Calendar for annualising Sharpe: ~252 sessions (Yahoo futures / stocks, or an uploaded
+    CSV with no weekend bars), 365 days for 24/7 crypto."""
+    session = req.data_source == "yahoo" or (
+        req.data_source == "csv" and frame is not None and looks_like_session_market(frame))
+    return 252 * 24 * 60 if session else 365 * 24 * 60
 
 
 def _quality(frame, req) -> dict:
     gap = _expected_gap(req.symbol)
     if gap is None and req.data_source == "yahoo":
         gap = pd.Timedelta(days=4)          # stock/ETF daily: weekends + holidays
+    if req.data_source == "csv" and looks_like_session_market(frame):
+        gap = pd.Timedelta(hours=80)        # FX / metals / indices: weekend closure
     return quality_report(frame, req.timeframe, gap)
 
 
@@ -114,11 +140,11 @@ def _execute(frame, signal, req, stop_pct=None, take_profit_pct=None) -> dict:
     """Simple engine, or the risk engine when the request carries risk settings."""
     if req.risk is None:
         return run_backtest(frame, signal, req.timeframe, req.initial_capital,
-                            req.fee_bps, req.slippage_bps, _year_minutes(req))
+                            req.fee_bps, req.slippage_bps, _year_minutes(req, frame))
     return run_risk_backtest(frame, signal, RiskConfig(**req.risk.model_dump()), req.timeframe,
                              req.initial_capital, req.fee_bps, req.slippage_bps,
                              stop_pct_override=stop_pct, take_profit_pct_override=take_profit_pct,
-                             trading_minutes_per_year=_year_minutes(req))
+                             trading_minutes_per_year=_year_minutes(req, frame))
 
 
 def _risk_assumptions(req) -> dict:
@@ -174,6 +200,22 @@ def _expected_gap(symbol: str):
     return m.expected_gap if m else None
 
 
+@router.post("/csv/inspect")
+def inspect_csv(request: CSVInspectRequest) -> dict:
+    """Parse an uploaded CSV and report what the backtester will see."""
+    try:
+        frame, timeframe = parse_ohlcv_csv(request.csv_data)
+    except CSVDataError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    session = looks_like_session_market(frame)
+    gap = pd.Timedelta(hours=80) if session else None
+    return {"bars": len(frame), "timeframe": timeframe, "session_market": session,
+            "start": frame["timestamp"].iloc[0].isoformat(),
+            "end": frame["timestamp"].iloc[-1].isoformat(),
+            "last_close": float(frame["close"].iloc[-1]),
+            "quality": quality_report(frame, timeframe, gap)}
+
+
 @router.get("/markets")
 def markets() -> dict:
     return {"markets": [{"symbol": m.symbol, "label": m.label, "fee_bps": m.fee_bps,
@@ -202,7 +244,7 @@ def create_backtest(request: BacktestRequest) -> dict:
     if request.strategy not in STRATEGIES:
         raise HTTPException(status_code=400, detail=f"Unknown strategy {request.strategy!r}")
     frame, source = _load_frame(request.data_source, request.symbol, request.timeframe,
-                                request.bars)
+                                request.bars, request.csv_data)
     try:
         params, result = _run(request.strategy, request.strategy_params(), frame, request)
     except ValueError as exc:
@@ -211,8 +253,8 @@ def create_backtest(request: BacktestRequest) -> dict:
         result.pop("trades")
     spec = STRATEGIES[request.strategy]
     if request.include_candles:
-        result["candles"] = _candles(frame)
-        result["overlays"] = _overlays(spec, frame, params)
+        result["candles"] = _candles(frame.tail(CHART_BARS))
+        result["overlays"] = _clip(_overlays(spec, frame, params), result["candles"])
 
     return {
         "symbol": request.symbol,
@@ -244,7 +286,7 @@ def compare_strategies(request: CompareRequest) -> dict:
     if unknown:
         raise HTTPException(status_code=400, detail=f"Unknown strategies: {unknown}")
     frame, source = _load_frame(request.data_source, request.symbol, request.timeframe,
-                                request.bars)
+                                request.bars, request.csv_data)
     rows = []
     for strategy_id in ids:
         row = {"strategy": strategy_id, "name": STRATEGIES[strategy_id].name}
@@ -292,7 +334,7 @@ def validate_custom(request: SpecRequest) -> dict:
 def backtest_custom(request: CustomBacktestRequest) -> dict:
     spec = _spec_or_400(request.spec)
     frame, source = _load_frame(request.data_source, request.symbol, request.timeframe,
-                                request.bars)
+                                request.bars, request.csv_data)
     needed = max(100, 3 * spec.warmup())
     if len(frame) < needed:
         raise HTTPException(status_code=400, detail=f"Bu strateji en az {needed} bar istiyor")
@@ -307,8 +349,9 @@ def backtest_custom(request: CustomBacktestRequest) -> dict:
     if not request.include_trades:
         result.pop("trades")
     if request.include_candles:
-        result["candles"] = _candles(frame)
-        result["overlays"] = _overlay_json(overlay_lines(spec, frame), frame)
+        result["candles"] = _candles(frame.tail(CHART_BARS))
+        result["overlays"] = _clip(_overlay_json(overlay_lines(spec, frame), frame),
+                                   result["candles"])
     return {
         "symbol": request.symbol,
         "timeframe": request.timeframe,
@@ -334,7 +377,7 @@ def discover(request: DiscoverRequest) -> dict:
     from app.schemas import RiskSettings
 
     frame, source = _load_frame(request.data_source, request.symbol, request.timeframe,
-                                request.bars)
+                                request.bars, request.csv_data)
     risk = request.risk or RiskSettings()
     try:
         out = run_discovery(frame, request.timeframe, RiskConfig(**risk.model_dump()),

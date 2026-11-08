@@ -5,6 +5,7 @@ import { CustomEditor, RulesCard } from "@/components/CustomStrategy";
 import { DeskSide, DeskView } from "@/components/Desk";
 import { DiscoveryFields, DiscoveryReport } from "@/components/Discovery";
 import EquityChart from "@/components/EquityChart";
+import { MarketPicker, timeframesFor } from "@/components/MarketPicker";
 import { RISK_DEFAULTS, RiskFields, RiskReport } from "@/components/RiskPanel";
 import PriceChart from "@/components/PriceChart";
 import { OVERLAY_PALETTE } from "@/components/charts";
@@ -13,7 +14,7 @@ import { useCustomStrategy } from "@/lib/useCustomStrategy";
 import { useDesk } from "@/lib/useDesk";
 import { fmt, pct, shortTime, tone } from "@/lib/format";
 import type {
-  BacktestResult, CompareResult, DiscoveryCandidate, DiscoveryResult, MarketParams, RunRecord,
+  BacktestResult, CompareResult, CSVInfo, DiscoveryCandidate, DiscoveryResult, MarketParams, RunRecord,
   StrategyJSON, StrategySpec,
 } from "@/lib/types";
 
@@ -28,8 +29,7 @@ const MARKET_DEFAULTS: MarketParams = {
   risk: RISK_DEFAULTS,
 };
 
-const TIMEFRAMES = ["15m", "30m", "1h", "4h", "1d"];
-const YAHOO_TIMEFRAMES = ["1h", "2h", "4h", "1d"];
+const MAX_BARS = 50000;
 const EXIT_TR: Record<string, string> = {
   signal: "sinyal", stop: "stop", target: "hedef", daily_limit: "günlük limit",
   max_total_loss: "toplam limit", end_of_data: "veri sonu",
@@ -45,6 +45,7 @@ export default function Home() {
   const custom = useCustomStrategy();
   const desk = useDesk(mode === "desk");
   const [market, setMarket] = useState<MarketParams>(MARKET_DEFAULTS);
+  const [csvInfo, setCsvInfo] = useState<CSVInfo | null>(null);
   const [strategies, setStrategies] = useState<StrategySpec[]>([]);
   const [strategyId, setStrategyId] = useState("ema_crossover");
   const [paramValues, setParamValues] = useState<Record<string, Record<string, number>>>({});
@@ -71,19 +72,6 @@ export default function Home() {
   const setM = <K extends keyof MarketParams>(key: K, value: MarketParams[K]) =>
     setMarket((m) => ({ ...m, [key]: value }));
   // Switching to/from US futures also switches to sensible symbol, timeframe and costs.
-  const pickSource = (source: MarketParams["data_source"]) =>
-    setMarket((m) => {
-      if (source === "yahoo") {
-        return { ...m, data_source: source, symbol: ["US100", "US500"].includes(m.symbol) ? m.symbol : "US100",
-                 timeframe: YAHOO_TIMEFRAMES.includes(m.timeframe) ? m.timeframe : "1h",
-                 fee_bps: 0.5, slippage_bps: 0.5 };
-      }
-      if (m.data_source === "yahoo") {
-        return { ...m, data_source: source, symbol: "BTC/USDT", fee_bps: MARKET_DEFAULTS.fee_bps,
-                 slippage_bps: MARKET_DEFAULTS.slippage_bps };
-      }
-      return { ...m, data_source: source };
-    });
   const numM = (key: keyof MarketParams) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setM(key, Number(e.target.value) as never);
   const setP = (name: string, value: number) =>
@@ -225,36 +213,20 @@ export default function Home() {
           </>)}
 
           <h2>Piyasa</h2>
-          <label>Veri kaynağı
-            <select value={market.data_source} onChange={(e) => pickSource(e.target.value as MarketParams["data_source"])}>
-              <option value="binance">Kripto · Binance</option>
-              <option value="yahoo">US vadeli · Yahoo (US100, US500)</option>
-              <option value="demo">Demo (sentetik)</option>
-            </select>
-          </label>
-          {market.data_source === "yahoo" && (
-            <p className="hint">US100 = Nasdaq 100 vadeli (NQ), US500 = S&amp;P 500 vadeli (ES). Haftada 5 gün, günde ~23 saat işlem görür; veri ~10 dk gecikmeli, 1h ve üstü zaman dilimi. Masa yalnızca uzun (alış) işlem açar.</p>
-          )}
+          <MarketPicker market={market} setMarket={setMarket} csv={csvInfo} setCsv={setCsvInfo} maxBars={MAX_BARS} />
           <div className="row">
-            <label>Sembol
-              {market.data_source === "yahoo" ? (
-                <select value={market.symbol} onChange={(e) => setM("symbol", e.target.value)}>
-                  <option value="US100">US100</option>
-                  <option value="US500">US500</option>
-                </select>
-              ) : <input value={market.symbol} onChange={(e) => setM("symbol", e.target.value.toUpperCase())} />}
-            </label>
             <label>Zaman dilimi
-              <select value={market.timeframe} onChange={(e) => setM("timeframe", e.target.value)}>
-                {(market.data_source === "yahoo" ? YAHOO_TIMEFRAMES : TIMEFRAMES).map((t) => <option key={t}>{t}</option>)}
+              <select value={market.timeframe} disabled={market.data_source === "csv"} onChange={(e) => setM("timeframe", e.target.value)}>
+                {timeframesFor(market, csvInfo).map((t) => <option key={t}>{t}</option>)}
               </select>
             </label>
           </div>
           <label>Bar sayısı
             {mode === "discover"
-              ? <input type="number" min={2000} max={20000} step={1000} value={discBars} onChange={(e) => setDiscBars(Number(e.target.value))} />
-              : <input type="number" min={100} max={20000} step={100} value={market.bars} onChange={numM("bars")} />}
+              ? <input type="number" min={2000} max={MAX_BARS} step="any" value={discBars} onChange={(e) => setDiscBars(Number(e.target.value))} />
+              : <input type="number" min={100} max={MAX_BARS} step="any" value={market.bars} onChange={numM("bars")} />}
           </label>
+          <p className="hint">En fazla {MAX_BARS.toLocaleString("tr-TR")} bar. Kaynakta o kadar geçmiş yoksa olanın hepsi kullanılır; grafikte son 5.000 bar gösterilir, hesaplar tüm barlarla yapılır.</p>
 
           <h2>Maliyet ve sermaye</h2>
           <label>Başlangıç sermayesi
