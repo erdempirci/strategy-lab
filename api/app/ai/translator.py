@@ -21,6 +21,7 @@ DEFAULT_BASE_URL = "https://api.anthropic.com"
 DEFAULT_MODEL = "claude-sonnet-5-5"
 TOOL_NAME = "submit_strategy"
 MAX_TEXT = 3000
+TIMEOUT_S = 75.0
 
 
 class AIError(RuntimeError):
@@ -137,7 +138,10 @@ def _tool_use(body: dict) -> dict | None:
 OPENAI_PROVIDERS = {
     "gemini": {"key": "GEMINI_API_KEY", "model_env": "GEMINI_MODEL",
                "base": "https://generativelanguage.googleapis.com/v1beta/openai",
-               "model": "gemini-3.8-flash", "label": "Gemini"},
+               "model": "gemini-3.8-flash", "label": "Gemini",
+               # Flash models "think" before answering; at the default level that can exceed
+               # the request timeout. Accepted values: none, low, medium, high.
+               "reasoning_env": "GEMINI_REASONING_EFFORT", "reasoning": "low"},
     "nvidia": {"key": "NVIDIA_API_KEY", "model_env": "NVIDIA_MODEL",
                "base": "https://integrate.api.nvidia.com/v1",
                "model": "meta/llama-3.1-70b-instruct", "label": "NVIDIA"},
@@ -187,10 +191,23 @@ def _openai_call(provider: str, messages: list[dict], client: httpx.Client) -> t
     cfg = OPENAI_PROVIDERS[provider]
     base = os.getenv(f"{provider.upper()}_BASE_URL", cfg["base"]).rstrip("/")
     model = os.getenv(cfg["model_env"], cfg["model"])
-    resp = client.post(f"{base}/chat/completions", headers={
-        "Authorization": f"Bearer {os.getenv(cfg['key'])}", "Content-Type": "application/json",
-    }, json={"model": model, "messages": messages, "temperature": 0.1, "max_tokens": 4000})
+    payload = {"model": model, "messages": messages, "temperature": 0.1, "max_tokens": 6000}
+    effort = os.getenv(cfg["reasoning_env"], cfg["reasoning"]) if "reasoning_env" in cfg else ""
+    if effort:
+        payload["reasoning_effort"] = effort
+    headers = {"Authorization": f"Bearer {os.getenv(cfg['key'])}",
+               "Content-Type": "application/json"}
     label = cfg["label"]
+    try:
+        resp = client.post(f"{base}/chat/completions", headers=headers, json=payload)
+        if resp.status_code == 400 and "reasoning" in resp.text.lower() and effort:
+            # Model does not accept this thinking level: retry with the model's default.
+            payload.pop("reasoning_effort")
+            resp = client.post(f"{base}/chat/completions", headers=headers, json=payload)
+    except httpx.TimeoutException as exc:
+        raise AIError(f"{label} {int(TIMEOUT_S)} saniyede yanıt vermedi. Biraz sonra tekrar dene; "
+                      f"sürerse metni kısalt ya da Vercel'de {cfg['model_env']} ile daha hızlı "
+                      "bir model seç.", 504) from exc
     if resp.status_code in (401, 403):
         raise AIError(f"{cfg['key']} geçersiz veya yetkisiz", 502)
     if resp.status_code == 429:
@@ -249,7 +266,7 @@ def translate(text: str, client: httpx.Client | None = None) -> dict:
         raise AIError(f"Metin en fazla {MAX_TEXT} karakter olabilir", 400)
 
     own = client is None
-    client = client or httpx.Client(timeout=90.0)
+    client = client or httpx.Client(timeout=httpx.Timeout(TIMEOUT_S, connect=10.0))
     try:
         if provider != "anthropic":
             return _translate_openai(provider, text, client)
