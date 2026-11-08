@@ -1,5 +1,5 @@
 import type {
-  AIStrategy, BacktestResult, CompareResult, DeskReport, DeskSettings, DeskState, DeskStrategy,
+  AIStrategy, BacktestResult, CompareResult, CSVInfo, DeskReport, DeskSettings, DeskState, DeskStrategy,
   DiscoveryResult, MarketParams, RulesText, StrategyJSON, StrategySpec,
 } from "./types";
 
@@ -78,3 +78,6 @@ export const deskSaveSettings = (settings: DeskSettings, access_code?: string) =
   call<DeskSettings>("/desk/settings", {
     method: "PUT", body: JSON.stringify({ ...settings, access_code }),
   });
+
+export const inspectCSV = (csv_data: string) =>
+  call<CSVInfo>("/csv/inspect", { method: "POST", body: JSON.stringify({ csv_data }) });

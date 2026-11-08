@@ -1,4 +1,4 @@
-export type DataSource = "demo" | "binance" | "yahoo";
+export type DataSource = "demo" | "binance" | "yahoo" | "csv";
 
 export interface RiskSettings {
   risk_per_trade_pct: number;
@@ -36,6 +36,17 @@ export interface MarketParams {
   fee_bps: number;
   slippage_bps: number;
   risk?: RiskSettings | null;
+  csv_data?: string | null;
+}
+
+export interface CSVInfo {
+  bars: number;
+  timeframe: string;
+  session_market: boolean;
+  start: string;
+  end: string;
+  last_close: number;
+  quality: DataQuality;
 }
 
 export interface ParamSpec {

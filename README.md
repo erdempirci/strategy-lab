@@ -192,6 +192,13 @@ market calendars.
 - **Stocks / ETFs** daily on the Yahoo source (`data_source: "yahoo"` with any symbol other
   than a named future, e.g. SPY, QQQ): dividend/split-adjusted, Stooq fallback; today's bar
   dropped until the US close. Sharpe uses 252 sessions/year; weekends are not gaps.
+- **Gold / index futures** on the Yahoo source: `XAUUSD` (GC=F, aliases GOLD/XAU/ALTIN),
+  `US100` (NQ=F), `US500` (ES=F); 1h/2h/4h/1d, 1h history ≈ 2 years.
+- **CSV upload** (`data_source: "csv"`, `csv_data`): TradingView "Export chart data" (UNIX or
+  ISO time), generic Date/Open/High/Low/Close, MT5 exports. Interval inferred from the data and
+  must match `timeframe`; files with no Saturday bars use the 252-session calendar.
+  `POST /api/csv/inspect` previews what will be tested. Up to 100,000 rows.
+- Up to **50,000 bars** per request; the chart shows the latest 5,000, metrics use all bars.
 - **Demo** deterministic synthetic data — clearly flagged, never real performance.
 
 ## Roadmap

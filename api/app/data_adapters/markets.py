@@ -30,9 +30,11 @@ class Market:
 MARKETS = {
     "US100": Market("US100", "NQ=F", "US100 · Nasdaq 100 vadeli (NQ, Yahoo)", 0.5, 0.5),
     "US500": Market("US500", "ES=F", "US500 · S&P 500 vadeli (ES, Yahoo)", 0.5, 0.5),
+    "XAUUSD": Market("XAUUSD", "GC=F", "XAUUSD · Altın vadeli (GC, Yahoo)", 0.5, 1.0),
 }
 ALIASES = {"NAS100": "US100", "NQ": "US100", "NDX": "US100", "USTEC": "US100",
-           "SPX500": "US500", "ES": "US500", "SPX": "US500", "US500": "US500", "US100": "US100"}
+           "SPX500": "US500", "ES": "US500", "SPX": "US500", "US500": "US500", "US100": "US100",
+           "XAUUSD": "XAUUSD", "XAU": "XAUUSD", "GOLD": "XAUUSD", "ALTIN": "XAUUSD", "GC": "XAUUSD"}
 
 
 def market_of(symbol: str) -> Market | None:
