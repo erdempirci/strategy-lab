@@ -6,7 +6,7 @@ from fastapi import APIRouter, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
 
-from app.ai.translator import AIError, translate
+from app.ai.translator import AIError, active_provider, provider_label, translate
 from app.data_adapters.binance import BinanceDataError
 from app.data_adapters.markets import MARKETS, load_ohlcv, market_of
 from app.data_adapters.normalize import quality_report
@@ -341,7 +341,9 @@ def _access_code() -> str | None:
 
 @router.get("/ai/status")
 def ai_status() -> dict:
-    return {"enabled": bool(os.getenv("ANTHROPIC_API_KEY")),
+    provider = active_provider()
+    return {"enabled": provider is not None, "provider": provider,
+            "provider_label": provider_label(provider),
             "access_code_required": _access_code() is not None}
 
 

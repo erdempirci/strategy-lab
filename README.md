@@ -19,9 +19,12 @@ Environment variables (all optional):
 
 | Variable | Purpose |
 |----------|---------|
-| `ANTHROPIC_API_KEY` | enables the AI strategy builder ("Kendi stratejim") |
-| `AI_ACCESS_CODE` | if set, the AI builder asks for this code (protects your API credits) |
-| `ANTHROPIC_MODEL` | default `claude-sonnet-5-5` |
+| `GEMINI_API_KEY` | AI strategy builder via Gemini — free key from Google AI Studio |
+| `NVIDIA_API_KEY` | AI strategy builder via NVIDIA build — free key from build.nvidia.com |
+| `ANTHROPIC_API_KEY` | AI strategy builder via Claude (paid API) |
+| `AI_PROVIDER` | `gemini` / `nvidia` / `anthropic` when more than one key is set (default order: anthropic, gemini, nvidia) |
+| `GEMINI_MODEL` / `NVIDIA_MODEL` / `ANTHROPIC_MODEL` | defaults `gemini-3.8-flash` / `meta/llama-3.1-70b-instruct` / `claude-sonnet-5-5` |
+| `AI_ACCESS_CODE` | if set, the AI builder asks for this code (protects your quota) |
 | `BINANCE_BASE_URL` | default `https://data-api.binance.vision` |
 | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | Masa journal storage (server side only); a secret key `sb_secret_…` or a legacy `service_role` key |
 | `DESK_ACCESS_CODE` | required to change the desk (add strategies, settings, run now) |
