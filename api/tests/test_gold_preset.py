@@ -75,3 +75,16 @@ def test_gold_preset_risk_mode_uses_own_stop_and_rr_target():
             assert abs(t["target_price"] - t["entry_price"]) == pytest.approx(1.5 * risk, rel=1e-6)
             checked += 1
     assert checked
+
+
+def test_hold_variant_has_no_friday_exit_and_exits_only_by_stop_or_target():
+    spec = PRESET_SPECS["gold_trend_pullback_hold"]
+    base = PRESET_SPECS[GOLD]
+    assert not (spec.exit.all or spec.exit.any or spec.short_exit.all or spec.short_exit.any)
+    assert spec.entry == base.entry and spec.short_entry == base.short_entry
+    data = client.post("/api/backtests", json={
+        "strategy": "gold_trend_pullback_hold", "bars": 3000, "timeframe": "4h",
+        "risk": {"risk_per_trade_pct": 0.5}}).json()
+    reasons = {t["exit_reason"] for t in data["trades"]}
+    assert reasons <= {"stop", "target", "signal", "end_of_data", "daily_limit", "max_total_loss"}
+    assert "monte_carlo" in data
