@@ -148,7 +148,32 @@ export interface BacktestResult {
   rules?: RulesText;
   risk?: RiskInfo;
   spec?: StrategyJSON;
+  monte_carlo?: MonteCarlo;
 }
+
+export type Pcts = Record<string, number>;
+
+export type MonteCarlo =
+  | { enough: false; trades: number; min_trades: number }
+  | {
+      enough: true;
+      runs: number;
+      trades: number;
+      seed: number;
+      method: string;
+      final_return_pct: Pcts;
+      max_drawdown_pct: Pcts;
+      win_rate_pct: Pcts;
+      losing_streak: { p50: number; p95: number };
+      prob_edge_negative_pct: number;
+      prob_loss_pct: number;
+      prob_total_loss_breach_pct: number | null;
+      max_total_loss_pct: number | null;
+      histogram: { counts: number[]; edges: number[] };
+      verdict: string;
+      level: "good" | "warn" | "bad";
+      limitations: string;
+    };
 
 export type StrategyJSON = Record<string, unknown>;
 

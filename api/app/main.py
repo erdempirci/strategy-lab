@@ -30,6 +30,7 @@ from app.schemas import (
     SpecRequest,
 )
 from app.services.backtester import run_backtest
+from app.services.monte_carlo import monte_carlo
 from app.services.risk_engine import RiskConfig, run_risk_backtest
 from app.strategies import STRATEGIES, build_signal
 from app.strategies.dsl import (
@@ -170,6 +171,11 @@ def _execute(frame, signal, req, stop_pct=None, take_profit_pct=None, levels=Non
                              limit_valid_bars=events.get("limit_valid_bars", 3) if events else 3)
 
 
+def _monte_carlo(result: dict, req) -> dict:
+    limit = req.risk.max_total_loss_pct if req.risk is not None else 10.0
+    return monte_carlo(result["trades"], max_total_loss_pct=limit)
+
+
 def _risk_assumptions(req) -> dict:
     if req.risk is None:
         return {}
@@ -273,6 +279,7 @@ def create_backtest(request: BacktestRequest) -> dict:
         params, result = _run(request.strategy, request.strategy_params(), frame, request)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    result["monte_carlo"] = _monte_carlo(result, request)
     if not request.include_trades:
         result.pop("trades")
     spec = STRATEGIES[request.strategy]
@@ -377,6 +384,7 @@ def backtest_custom(request: CustomBacktestRequest) -> dict:
                               take_profit_rr=spec.take_profit_rr, events=events)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    result["monte_carlo"] = _monte_carlo(result, request)
     if not request.include_trades:
         result.pop("trades")
     if request.include_candles:
